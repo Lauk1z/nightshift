@@ -402,6 +402,7 @@ public/             Interface (plain JS, no build step)
 scripts/make-icon.js Generates the app icon
 scripts/vendor.js   Copies xterm.js into public/vendor
 scripts/i18n-*.js   Translation helpers: find untranslated text, check dictionaries, generate Traditional Chinese
+scripts/screenshots/ Generates the README screenshots (npm run screenshots)
 test/run.js         Tests
 ```
 
@@ -414,5 +415,7 @@ node scripts/i18n-keys.js
 It lists any translations missing from `en.json` (add them), then run `node scripts/i18n-hant.js` to regenerate the Traditional Chinese dictionary and user guide (run `npm install` first; it uses opencc-js). `npm test` also checks that the dictionaries are complete.
 
 The user guide comes in three versions, and "User guide" in the account menu shows the one for the interface language: `README.md` (Simplified Chinese, the original), `README.en.md` (English; update it when the original changes) and `README.zh-Hant.md` (Traditional Chinese, generated, don't edit it by hand). Content meant only for GitHub (the icon, screenshots and language links at the top) is written as HTML on lines of its own, and the in-app user guide leaves those lines out. Screenshots are in `docs/screenshots/<language>/`.
+
+After changing the interface, run `npm run screenshots` to regenerate these screenshots: it starts the desktop app with demo data and stand-in command-line tools, leaves your real data and settings alone, and makes no AI calls. To retake only some of them, add screenshot names or languages, such as `npm run screenshots -- usage en`.
 
 To add a new AI tool, add a file in `server/adapters/` that implements `run({ agent, cwd, prompt, sessionId, emit })` and returns `{ done, cancel }`. `codex.js` is a good example to follow.

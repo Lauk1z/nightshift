@@ -11,6 +11,7 @@
     "web": "node server/index.js --open",
     "test": "node test/run.js",
     "icon": "node scripts/make-icon.js",
+    "screenshots": "node scripts/screenshots",
     "vendor": "node scripts/vendor.js",
     "predist": "node scripts/vendor.js",
     "dist": "electron-builder --win"

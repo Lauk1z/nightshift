@@ -402,6 +402,7 @@ public/             介面（原生 JS，無構建步驟）
 scripts/make-icon.js 生成應用圖示
 scripts/vendor.js   複製 xterm.js 到 public/vendor
 scripts/i18n-*.js   翻譯用：找出沒翻譯的文字、檢查詞典、生成繁體詞典
+scripts/screenshots/ 生成 README 的截圖（npm run screenshots）
 test/run.js         測試
 ```
 
@@ -414,5 +415,7 @@ node scripts/i18n-keys.js
 它會列出 `en.json` 裡還缺的翻譯（補上即可），然後執行 `node scripts/i18n-hant.js` 重新生成繁體詞典和繁體的使用說明（需要先 `npm install`，用到 opencc-js）。`npm test` 也會檢查詞典是否齊全。
 
 使用說明有三份，帳戶選單裡的「使用說明」按介面語言顯示：`README.md`（簡體，以它為準）、`README.en.md`（英文，改了簡體版要跟著改）、`README.zh-Hant.md`（繁體，生成的，不要手改）。只給 GitHub 看的內容（最上面的圖示、截圖、語言連結）寫成單獨一行的 HTML，介面裡的「使用說明」會去掉這些行；截圖放在 `docs/screenshots/<語言>/`。
+
+介面改了以後執行 `npm run screenshots` 重新生成這些截圖：它用演示資料和替身命令列工具啟動桌面版來截圖，不碰真實的資料和設定，也不呼叫 AI；只想重拍其中幾張，就在後面寫上圖名或語言，比如 `npm run screenshots -- usage en`。
 
 要接入新的 AI 工具，在 `server/adapters/` 里加一個檔案，實現 `run({ agent, cwd, prompt, sessionId, emit })`，返回 `{ done, cancel }`。可以參照 `codex.js`。
