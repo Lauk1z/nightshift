@@ -222,7 +222,7 @@ const ROLES = () => ({
       tr('负责审查代码和运行效果：找 bug、检查是否符合设计、提出具体的修改意见。发现问题就交给负责开发的成员修复；确认没问题后请用户验收。一般不直接改代码。'),
   },
 });
-const NAMES = { codex: 'GPT', claude: 'Claude', opencode: 'OpenCode', gemini: 'Gemini', grok: 'Grok', pi: 'Pi', hermes: 'Hermes' }; // 模板只用命令行工具
+const NAMES = { codex: 'GPT', claude: 'Claude', opencode: 'OpenCode', gemini: 'Gemini', grok: 'Grok', pi: 'Pi', hermes: 'Hermes', dsh: 'DeepSeek' }; // 模板只用命令行工具
 
 function templateAgents(kind, env) {
   if (kind === 'blank') return [];
@@ -231,10 +231,10 @@ function templateAgents(kind, env) {
   const first = (...ids) => ids.find(has);
   const plan = [
     // 每个角色按顺序找这台电脑上装了的工具
-    ['design', first('codex', 'gemini', 'opencode', 'grok', 'claude', 'pi', 'hermes')],
-    ['dev', first('claude', 'codex', 'opencode', 'gemini', 'grok', 'pi', 'hermes')],
+    ['design', first('codex', 'gemini', 'opencode', 'grok', 'claude', 'pi', 'hermes', 'dsh')],
+    ['dev', first('claude', 'codex', 'opencode', 'gemini', 'grok', 'pi', 'hermes', 'dsh')],
   ];
-  if (kind === 'trio') plan.push(['review', first('opencode', 'gemini', 'grok', 'codex', 'claude', 'pi', 'hermes')]);
+  if (kind === 'trio') plan.push(['review', first('opencode', 'gemini', 'grok', 'codex', 'claude', 'pi', 'hermes', 'dsh')]);
   const agents = [];
   for (const [roleKey, adapter] of plan) {
     if (!adapter) continue;
@@ -580,8 +580,8 @@ route('PATCH', '/api/rooms/:id/agents/:aid', async (req, { params, body }) => {
   if (idx < 0) throw new HttpError(404, tr('成员不存在'));
   const prev = room.agents[idx];
   const next = cleanAgent(body, room, prev);
-  if (next.adapter !== prev.adapter) {
-    // 换了接入方式，旧会话没法续用
+  if (adapters.sessionOutdated(prev, next)) {
+    // 换了接入方式，或者改了 DeepSeek Harness 建会话时就定下的设置：旧会话没法续用
     delete room.sessions[prev.id];
     delete room.lastSeen[prev.id];
     delete room.sideSessions[prev.id];

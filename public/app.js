@@ -30,9 +30,9 @@
   const PALETTE = ['#3F6AD8', '#13897A', '#B4610C', '#B0357A', '#5B47C7', '#2F8A3B', '#0E7490', '#9A3412'];
   const USER_ALIASES = ['用户', 'user', 'human', '人类'];
   const ALL_ALIASES = ['所有人', '全体成员', '全体', 'all', 'everyone'];
-  const NAMES = { codex: 'GPT', claude: 'Claude', opencode: 'OpenCode', gemini: 'Gemini', grok: 'Grok', pi: 'Pi', hermes: 'Hermes', openai: tr('助手') };
+  const NAMES = { codex: 'GPT', claude: 'Claude', opencode: 'OpenCode', gemini: 'Gemini', grok: 'Grok', pi: 'Pi', hermes: 'Hermes', dsh: 'DeepSeek', openai: tr('助手') };
   // 能接入的命令行 AI 工具（顺序就是界面上列出来的顺序）
-  const CLI_TOOLS = ['claude', 'codex', 'opencode', 'gemini', 'grok', 'pi', 'hermes'];
+  const CLI_TOOLS = ['claude', 'codex', 'opencode', 'gemini', 'grok', 'pi', 'hermes', 'dsh'];
 
   const ADAPTERS = {
     claude: {
@@ -77,6 +77,12 @@
       what: tr('Nous Research 的开源智能体，会自己积累技能，可接 OpenRouter 等'),
       modelHint: tr('Hermes 的模型在它自己的设置里选（命令行里运行 hermes model）。这里可以用默认模型，或者选「自己输入……」填模型名。'),
     },
+    dsh: {
+      label: 'DeepSeek Harness',
+      install: { win: 'npm install -g @deepseek-ai/dsh', other: 'npm install -g @deepseek-ai/dsh' },
+      what: tr('DeepSeek 官方的开源智能体（dsh），用 DeepSeek API Key'),
+      modelHint: tr('列表是 DeepSeek Harness 自带的模型。在 dsh 里接了别的提供商的话，选「自己输入……」写成「提供商/模型」。改了模型、思考强度或权限，下一轮会换一个新会话。'),
+    },
     openai: {
       label: tr('API 模型'),
       what: tr('任何兼容 OpenAI 接口的模型：DeepSeek、通义千问、Kimi……'),
@@ -95,6 +101,7 @@
         grok: tr('只放行只读的工具和命令（dontAsk 模式）'),
         pi: tr('只给它 read、grep、find、ls 这几个只读工具'),
         hermes: tr('去掉命令行工具，并要求它不改文件（Hermes 没有只读的文件工具，无法完全限制）'),
+        dsh: tr('只读沙箱：能看文件、运行只读命令，不能改动'),
         openai: tr('只能列出和读取项目文件'),
       },
     },
@@ -108,6 +115,7 @@
         grok: tr('自动批准改文件；需要确认的命令不会运行'),
         pi: tr('能读写文件，不能运行命令'),
         hermes: tr('能改文件、运行普通命令；危险的命令没人批准就不运行'),
+        dsh: tr('能改项目文件夹里的文件，命令在沙箱里运行；需要批准的操作不会执行'),
         openai: tr('能读写项目文件，不能运行命令'),
       },
     },
@@ -121,6 +129,7 @@
         grok: tr('自动批准所有操作（always-approve）'),
         pi: tr('用 pi 的默认工具，能运行任何命令'),
         hermes: tr('危险的命令也直接运行，不再拦截（--yolo）'),
+        dsh: tr('关闭沙箱，能运行任何命令（danger-full-access）'),
         openai: tr('能读写文件，还能在项目文件夹里运行命令'),
       },
     },
@@ -2559,10 +2568,10 @@
     const has = (id) => envOf(id).installed;
     const first = (...ids) => ids.find(has);
     const plan = [
-      [tr('产品设计'), first('codex', 'gemini', 'opencode', 'grok', 'claude', 'pi', 'hermes')],
-      [tr('开发'), first('claude', 'codex', 'opencode', 'gemini', 'grok', 'pi', 'hermes')],
+      [tr('产品设计'), first('codex', 'gemini', 'opencode', 'grok', 'claude', 'pi', 'hermes', 'dsh')],
+      [tr('开发'), first('claude', 'codex', 'opencode', 'gemini', 'grok', 'pi', 'hermes', 'dsh')],
     ];
-    if (kind === 'trio') plan.push([tr('测试审查'), first('opencode', 'gemini', 'grok', 'codex', 'claude', 'pi', 'hermes')]);
+    if (kind === 'trio') plan.push([tr('测试审查'), first('opencode', 'gemini', 'grok', 'codex', 'claude', 'pi', 'hermes', 'dsh')]);
     const out = [];
     for (const [role, ad] of plan) {
       if (!ad) continue;
@@ -2758,6 +2767,11 @@
         <span class="hint">${tr('Key 只保存在这台电脑的 data 文件夹里，不会发给任何人（除了你填的接口地址）。')}</span>
         <label class="check"><input type="checkbox" id="mm-tools" ${a.api.tools !== false ? 'checked' : ''}>${tr('让它能读写项目文件（需要模型支持工具调用）')}</label>
       </div>
+      <div class="field" id="mm-dsh-wrap">
+        <label for="mm-dsh-key">DeepSeek API Key</label>
+        <input class="input mono" id="mm-dsh-key" type="password" value="${esc(a.api.apiKey || '')}" placeholder="${a.api.hasKey ? '' : tr('sk-…（不填就用系统环境变量 DEEPSEEK_API_KEY）')}" autocomplete="off">
+        <span class="hint">${tr('Key 只保存在这台电脑的 data 文件夹里，运行时交给 DeepSeek Harness，不会发给别人。')}</span>
+      </div>
       <div class="field">
         <div class="label-row"><label for="mm-model-sel" id="mm-model-label">${tr('模型')}</label><button type="button" class="link-btn" id="mm-model-refresh">${tr('刷新列表')}</button></div>
         <select class="input" id="mm-model-sel"></select>
@@ -2935,6 +2949,7 @@
       $('#mm-what', body).textContent = e.outdated && e.hint ? e.hint : ADAPTERS[ad].what;
       $('#mm-what', body).classList.toggle('warn', !!e.outdated);
       $('#mm-api-wrap', body).hidden = ad !== 'openai';
+      $('#mm-dsh-wrap', body).hidden = ad !== 'dsh';
       $('#mm-extra-wrap', body).hidden = ad === 'openai';
       $('#mm-body-wrap', body).hidden = ad !== 'openai';
       renderModel();
@@ -3035,6 +3050,7 @@
           extraBody: $('#mm-extra-body', body).value.trim(),
         };
       }
+      if (ad === 'dsh') data.api = { apiKey: $('#mm-dsh-key', body).value };
       return data;
     };
     const save = async () => {

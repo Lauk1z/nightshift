@@ -9,6 +9,7 @@ const list = [
   require('./grok'),
   require('./pi'),
   require('./hermes'),
+  require('./dsh'),
   require('./openai'),
 ];
 const byId = new Map(list.map((a) => [a.id, a]));
@@ -50,9 +51,17 @@ async function detectAll(force = false) {
   }
 }
 
+// 改了成员设置以后，旧会话还能不能续用：换了接入方式不能；有的工具（DeepSeek Harness，pinsSession）
+// 在建会话时就定下了模型、思考强度和权限，改了这几项也不能
+function sessionOutdated(prev, next) {
+  if (next.adapter !== prev.adapter) return true;
+  const a = byId.get(next.adapter);
+  return !!(a && a.pinsSession) && ['model', 'effort', 'permission'].some((k) => (next[k] || '') !== (prev[k] || ''));
+}
+
 // 测试时用来注册假的适配器
 function register(a) {
   byId.set(a.id, a);
 }
 
-module.exports = { list, get: (id) => byId.get(id), detectAll, register };
+module.exports = { list, get: (id) => byId.get(id), detectAll, register, sessionOutdated };

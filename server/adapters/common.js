@@ -121,6 +121,6 @@ function segmenter(emit) {
 
 // 续上旧会话失败（会话被删了、换了电脑……）时各家的说法：遇到就换一个新会话重来
 const RESUME_FAIL =
-  /no conversation found|session.{0,40}not found|could not find session|couldn't find session|no session (found|matching|with)|session.{0,40}(does not|doesn't) exist|no rollout found|thread.{0,40}not found|unknown session|failed to resume|cannot resume|invalid session/i;
+  /no conversation found|session.{0,40}not found|could not find session|couldn't find session|no session (found|matching|with)|session.{0,40}(does not|doesn't) exist|no rollout found|thread.{0,40}not found|unknown session|failed to resume|cannot resume|invalid session|omit --session-id/i;
 
 module.exports = { rel, clip, prettyCmd, tail, optionBlock, makeProbe, addUsage, readableError, segmenter, RESUME_FAIL };

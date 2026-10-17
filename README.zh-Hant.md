@@ -1,6 +1,6 @@
 # Nightshift：讓多個 AI 在同一個專案裡協作
 
-把 Claude Code、Codex（ChatGPT）、OpenCode、Gemini CLI、Grok Build、pi、Hermes Agent，以及 DeepSeek、通義千問、Kimi 這類 API 模型拉進同一個「群聊」，讓它們共用一個專案資料夾、自己分工、互相交接。
+把 Claude Code、Codex（ChatGPT）、OpenCode、Gemini CLI、Grok Build、pi、Hermes Agent、DeepSeek Harness，以及 DeepSeek、通義千問、Kimi 這類 API 模型拉進同一個「群聊」，讓它們共用一個專案資料夾、自己分工、互相交接。
 
 你只要提需求，比如「做一個待辦清單網頁，@GPT 先出設計，再交給 Claude 實現」。之後的流程是：
 
@@ -38,6 +38,7 @@
 | Grok Build | PowerShell 裡執行 `irm https://x.ai/cli/install.ps1 \| iex` | 執行一次 `grok login`，或者設定 `XAI_API_KEY` |
 | pi | `npm install -g @earendil-works/pi-coding-agent` | 執行一次 `pi`，用 `/login` 登入，或者設定對應提供商的 API Key |
 | Hermes Agent | PowerShell 裡執行 `iex (irm https://hermes-agent.nousresearch.com/install.ps1)` | 執行一次 `hermes model` 選好提供商和模型 |
+| DeepSeek Harness | `npm install -g @deepseek-ai/dsh` | 在成員設定裡填 DeepSeek 的 API Key，或者設定環境變數 `DEEPSEEK_API_KEY` |
 | API 模型 | 不用裝 | 任何相容 OpenAI API的服務，填地址、Key 和模型名即可 |
 
 左下角你的名字右邊的小點是這台電腦上裝好的 AI 工具，一個點一個：綠色是能用，琥珀色是版本太舊。點一下能看到每個工具的版本；沒裝的工具點一下會複製它的安裝命令。
@@ -207,8 +208,9 @@
 | Grok Build | `~/.grok/skills`（它也會直接用 Claude 的技能和通用技能） |
 | pi | `~/.pi/agent/skills` |
 | Hermes Agent | Hermes data 資料夾裡的 `skills` |
+| DeepSeek Harness | `~/.dsh/skills`（它也會直接用通用技能） |
 | 通用 | `~/.agents/skills` |
-| 專案裡的 | 專案資料夾下的 `.claude/skills`、`.codex/skills`、`.opencode/skill(s)`、`.gemini/skills`、`.grok/skills`、`.pi/skills`、`.agents/skills` |
+| 專案裡的 | 專案資料夾下的 `.claude/skills`、`.codex/skills`、`.opencode/skill(s)`、`.gemini/skills`、`.grok/skills`、`.pi/skills`、`.dsh/skills`、`.agents/skills` |
 
 比如發 `@GPT /frontend-design 設計一個登入頁`：
 
@@ -242,6 +244,7 @@
 | Grok Build | `grok models` | `--effort` |
 | pi | `pi --list-models`，按提供商分組，只列出已經登入或配好 Key 的提供商 | `--thinking`，超過模型支援的檔位會自動降下來 |
 | Hermes Agent | 只讀出它設定裡的預設模型（模型在 Hermes 裡用 `hermes model` 選），也可以自己輸入模型名 | `--reasoning` |
+| DeepSeek Harness | 它自帶的 deepseek-flash（預設）和 deepseek-v4-pro；在 dsh 裡接的別家提供商寫成「提供商/模型」 | 每次用一個臨時的 `--patch` 改 `agent-default-model` 的 `reasoningEffort`（off / low / high / max）。它在建會話時就定下模型，所以改了模型、思考強度或權限，下一輪會換新會話 |
 | API 模型 | 介面的 `/models`（點「取得模型清單」） | 請求裡的 `reasoning_effort`；各家特有的開關寫在「額外請求參數」裡 |
 
 選「預設」就是不額外指定，沿用那個工具自己的設定。每條訊息底部會記下這次用的模型和思考強度。
@@ -264,6 +267,7 @@
 | Grok Build | dontAsk 模式，只放行只讀的工具和命令 | 自動批准改檔案，需要確認的命令不執行 | always-approve，自動批准一切 |
 | pi | 只給 read、grep、find、ls | 再加上 edit、write，不能執行命令 | 預設工具，能執行任何命令 |
 | Hermes Agent | 去掉命令列工具，並要求它不改檔案（Hermes 沒有隻讀的檔案工具，無法完全限制） | 預設工具，危險的命令沒人批准就不執行 | `--yolo`，危險的命令也直接執行 |
+| DeepSeek Harness | 只讀沙箱（`DSH_PERMISSION_MODE=read-only`） | 能改專案資料夾裡的檔案，命令在沙箱裡執行；需要批准的操作不執行 | 關閉沙箱（`danger-full-access`） |
 | API 模型 | 只能列出、讀取檔案 | 能讀寫檔案 | 還能執行命令 |
 
 想讓負責開發的成員自己安裝依賴、跑測試，就把它設成「完全權限」。只在可信的專案裡這樣做。
@@ -297,7 +301,7 @@ API 模型本身不會讀寫檔案，Nightshift 會給它一組只能在專案�
 ## 常見問題
 
 **成員一直報錯，提示認證失敗或連不上？**
-Nightshift 直接呼叫你電腦上的 `claude`、`codex`、`opencode`、`gemini`、`grok`、`pi`、`hermes` 命令，用的是它們自己的登入和設定。先在命令列裡確認 `claude -p "你好"`、`gemini -p "你好"` 這類命令能正常回答。
+Nightshift 直接呼叫你電腦上的 `claude`、`codex`、`opencode`、`gemini`、`grok`、`pi`、`hermes`、`dsh` 命令，用的是它們自己的登入和設定。先在命令列裡確認 `claude -p "你好"`、`gemini -p "你好"` 這類命令能正常回答。
 
 **「Claude」成員實際用的是什麼模型？**
 看訊息底部顯示的模型名。不指定模型時，取決於 Claude Code 自己的設定（`~/.claude/settings.json`）。如果你用 CC Switch 這類代理把 Claude Code 轉到了別的模型，這裡也會跟著變。
@@ -361,7 +365,7 @@ server/
   files.js          每輪前後對比專案檔案（檔案卡片），檔案樹和搜尋，開啟檔案、在資料夾中顯示
   store.js          本地儲存：專案、會話、聊天記錄；舊版的資料在這裡升級
   proc.js           Windows 下可靠地啟動 / 結束命令列工具
-  adapters/         各家 AI 的接入：claude、codex、opencode、gemini、grok、pi、hermes、openai（相容介面）
+  adapters/         各家 AI 的接入：claude、codex、opencode、gemini、grok、pi、hermes、dsh（DeepSeek Harness）、openai（相容介面）
 public/             介面（原生 JS，無構建步驟）
   app.js            主介面：標題欄、專案和會話、成員面板、群聊、輸入框
   panel.js          右側面板：檔案、側邊對話、終端機、瀏覽器

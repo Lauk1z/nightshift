@@ -168,7 +168,7 @@ function spawnTool(cmd, args, opts = {}) {
   const fullArgs = [...r.pre, ...args];
   return spawn(r.shell ? quoteForShell(r.file) : r.file, r.shell ? fullArgs.map(quoteForShell) : fullArgs, {
     cwd: opts.cwd,
-    env: opts.env || childEnv(r.env || {}),
+    env: opts.env || childEnv({ ...(r.env || {}), ...(opts.extraEnv || {}) }), // extraEnv：这一次运行额外加的环境变量
     windowsHide: true,
     shell: !!r.shell,
     detached: !IS_WIN,
@@ -192,8 +192,8 @@ function killTree(child) {
 }
 
 // 启动一个输出 JSONL 的命令行工具：prompt 从 stdin 写入，每行 JSON 回调 onJson。
-function runJsonl({ cmd, args, cwd, input, onJson, onLine }) {
-  const child = spawnTool(cmd, args, { cwd });
+function runJsonl({ cmd, args, cwd, input, onJson, onLine, env }) {
+  const child = spawnTool(cmd, args, { cwd, extraEnv: env });
   let buf = '';
   let stderr = '';
   const flush = (line) => {

@@ -1,6 +1,6 @@
 # Nightshift: several AIs working together on one project
 
-Nightshift puts Claude Code, Codex (ChatGPT), OpenCode, Gemini CLI, Grok Build, pi, Hermes Agent and API models such as DeepSeek, Qwen and Kimi into one "group chat". They share a project folder, split up the work and hand it off to each other.
+Nightshift puts Claude Code, Codex (ChatGPT), OpenCode, Gemini CLI, Grok Build, pi, Hermes Agent, DeepSeek Harness and API models such as DeepSeek, Qwen and Kimi into one "group chat". They share a project folder, split up the work and hand it off to each other.
 
 You just describe what you want, for example "Build a to-do list web page. @GPT drafts the design first, then hands it to Claude to build." From there:
 
@@ -38,6 +38,7 @@ You also need at least one AI. Once a command-line tool is installed and signed 
 | Grok Build | In PowerShell: `irm https://x.ai/cli/install.ps1 \| iex` | Run `grok login` once, or set `XAI_API_KEY` |
 | pi | `npm install -g @earendil-works/pi-coding-agent` | Run `pi` once and sign in with `/login`, or set the provider's API key |
 | Hermes Agent | In PowerShell: `iex (irm https://hermes-agent.nousresearch.com/install.ps1)` | Run `hermes model` once to choose a provider and model |
+| DeepSeek Harness | `npm install -g @deepseek-ai/dsh` | Enter your DeepSeek API key in the member's settings, or set the `DEEPSEEK_API_KEY` environment variable |
 | API model | Nothing to install | Any service with an OpenAI-compatible API; enter its URL, key and model name |
 
 At the bottom left, the dots to the right of your name are the AI tools installed on this computer, one dot each: green means ready, amber means the version is too old. Click them to see each tool's version; clicking a tool that isn't installed copies its install command.
@@ -207,8 +208,9 @@ Typing `/` lists the skills installed on this computer and which tool each one c
 | Grok Build | `~/.grok/skills` (it also uses Claude's skills and the shared ones directly) |
 | pi | `~/.pi/agent/skills` |
 | Hermes Agent | `skills` in Hermes's data folder |
+| DeepSeek Harness | `~/.dsh/skills` (it also uses the shared skills directly) |
 | Shared | `~/.agents/skills` |
-| In the project | `.claude/skills`, `.codex/skills`, `.opencode/skill(s)`, `.gemini/skills`, `.grok/skills`, `.pi/skills` and `.agents/skills` in the project folder |
+| In the project | `.claude/skills`, `.codex/skills`, `.opencode/skill(s)`, `.gemini/skills`, `.grok/skills`, `.pi/skills`, `.dsh/skills` and `.agents/skills` in the project folder |
 
 For example, if you send `@GPT /frontend-design design a sign-in page`:
 
@@ -242,6 +244,7 @@ Model lists come from each tool itself. If you change a tool's configuration, cl
 | Grok Build | `grok models` | `--effort` |
 | pi | `pi --list-models`, grouped by provider; only providers you've signed in to or set a key for are listed | `--thinking`; levels above what a model supports are lowered automatically |
 | Hermes Agent | Only the default model from its settings (choose models in Hermes with `hermes model`); you can also type a model name | `--reasoning` |
+| DeepSeek Harness | Its built-in deepseek-flash (default) and deepseek-v4-pro; for other providers you connected in dsh, write provider/model | A temporary `--patch` sets `reasoningEffort` on `agent-default-model` (off / low / high / max). It fixes the model when a session starts, so changing the model, thinking effort or permissions starts a new session on the next turn |
 | API model | The API's `/models` (click "Fetch models") | `reasoning_effort` in the request; provider-specific switches go in "Extra request parameters" |
 
 "Default" means nothing extra is set and the tool's own setting is used. Each message records the model and thinking effort it used at the bottom.
@@ -264,6 +267,7 @@ Each member has its own setting:
 | Grok Build | dontAsk mode: only read-only tools and commands | Edits approved automatically; commands that need approval don't run | always-approve, approves everything |
 | pi | Only read, grep, find and ls | Adds edit and write, can't run commands | Default tools, can run any command |
 | Hermes Agent | Removes command-line tools and asks it not to change files (Hermes has no read-only file tools, so this can't be fully enforced) | Default tools; dangerous commands don't run without approval | `--yolo`, runs dangerous commands too |
+| DeepSeek Harness | Read-only sandbox (`DSH_PERMISSION_MODE=read-only`) | Can change files in the project folder; commands run in a sandbox, and anything that needs approval doesn't run | Sandbox off (`danger-full-access`) |
 | API model | Can only list and read files | Can read and write files | Can also run commands |
 
 If you want the developer member to install dependencies and run tests itself, give it "Full access". Only do this for projects you trust.
@@ -297,7 +301,7 @@ API models can't read or write files on their own, so Nightshift gives them a se
 ## FAQ
 
 **A member keeps failing with authentication or connection errors?**
-Nightshift runs the `claude`, `codex`, `opencode`, `gemini`, `grok`, `pi` and `hermes` commands on your computer, using their own sign-in and configuration. First check that something like `claude -p "hello"` or `gemini -p "hello"` answers normally in a terminal.
+Nightshift runs the `claude`, `codex`, `opencode`, `gemini`, `grok`, `pi`, `hermes` and `dsh` commands on your computer, using their own sign-in and configuration. First check that something like `claude -p "hello"` or `gemini -p "hello"` answers normally in a terminal.
 
 **Which model is the "Claude" member actually using?**
 Look at the model name at the bottom of its messages. With no model chosen, it depends on Claude Code's own configuration (`~/.claude/settings.json`). If you route Claude Code to another model with a proxy such as CC Switch, that shows here too.
@@ -361,7 +365,7 @@ server/
   i18n.js           Server text shown to users (errors, system messages) follows the language setting
   store.js          Local storage: projects, chats and history; upgrades data from older versions
   proc.js           Starts and stops command-line tools reliably on Windows
-  adapters/         One file per AI: claude, codex, opencode, gemini, grok, pi, hermes, openai (compatible APIs)
+  adapters/         One file per AI: claude, codex, opencode, gemini, grok, pi, hermes, dsh (DeepSeek Harness), openai (compatible APIs)
 public/             Interface (plain JS, no build step)
   app.js            Main interface: title bar, projects and chats, members panel, group chat, message box
   panel.js          Side panel: files, side chat, terminal, browser

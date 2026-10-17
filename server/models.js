@@ -332,6 +332,22 @@ function hermesCatalog() {
   };
 }
 
+// DeepSeek Harness：用它自带的模型目录（deepseek-flash 是默认，deepseek-v4-pro 更强）。自己在 dsh 里接的提供商，
+// 在「自己输入……」里写成「提供商/模型」。思考档位 off / low / high / max，默认 high
+const DSH_EFFORTS = ['none', 'low', 'high', 'max'];
+function dshCatalog() {
+  return {
+    models: [
+      { id: 'deepseek-flash', label: 'DeepSeek-V4.1-Flash', note: 'deepseek-flash', efforts: DSH_EFFORTS },
+      { id: 'deepseek-v4-pro', label: 'DeepSeek-V4-Pro', note: tr('更强，适合复杂的任务'), efforts: DSH_EFFORTS },
+    ],
+    efforts: DSH_EFFORTS,
+    defaultModel: 'deepseek-flash',
+    defaultEffort: 'high',
+    source: 'dsh',
+  };
+}
+
 async function catalog(adapter, force = false) {
   const hit = cache.get(adapter);
   if (!force && hit && (hit.pending || Date.now() - hit.at < TTL)) return hit.pending || hit.data;
@@ -351,6 +367,8 @@ async function catalog(adapter, force = false) {
         return piCatalog();
       case 'hermes':
         return hermesCatalog();
+      case 'dsh':
+        return dshCatalog();
       case 'openai':
         return { models: [], efforts: API_EFFORTS, defaultModel: '', defaultEffort: '' };
       default:
@@ -413,5 +431,6 @@ module.exports = {
   parseGrokModels,
   hermesDefaultModel,
   hermesHome,
+  dshCatalog,
   CLAUDE_EFFORTS,
 };

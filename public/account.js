@@ -6,7 +6,7 @@ window.createAccount = function createAccount(ctx) {
   const { S, $, el, esc, api, toast, md, ICONS, openMenu, openModal, footButtons, confirmBox, desktop, envOf, ADAPTERS, redetect, aboutModal, copyText, appName } = ctx;
   const t = window.I18N.t;
   const COLORS = ['#2B7BB9', '#3F6AD8', '#13897A', '#B4610C', '#B0357A', '#5B47C7', '#2F8A3B', '#9A3412'];
-  const TOOLS = ['claude', 'codex', 'opencode', 'gemini', 'grok', 'pi', 'hermes'];
+  const TOOLS = ['claude', 'codex', 'opencode', 'gemini', 'grok', 'pi', 'hermes', 'dsh'];
 
   // ---------- 你是谁 ----------
   const userName = () => (S.settings && S.settings.name) || (S.env && S.env.user) || t('我');

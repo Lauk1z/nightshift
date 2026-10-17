@@ -8,6 +8,7 @@
 //   OpenCode：~/.config/opencode/skill(s)、项目里的 .opencode/skill(s)
 //   Gemini CLI：~/.gemini/skills、项目里的 .gemini/skills；Grok Build：~/.grok/skills、项目里的 .grok/skills
 //   pi：~/.pi/agent/skills、项目里的 .pi/skills；Hermes：它数据文件夹里的 skills
+//   DeepSeek Harness：~/.dsh/skills（DSH_HOME）、项目里的 .dsh/skills，它也读通用的 .agents/skills
 //   通用：~/.agents/skills、项目里的 .agents/skills
 const fs = require('fs');
 const os = require('os');
@@ -162,6 +163,7 @@ function collect(workspace) {
   project('gemini', path.join('.gemini', 'skills'));
   project('grok', path.join('.grok', 'skills'));
   project('pi', path.join('.pi', 'skills'));
+  project('dsh', path.join('.dsh', 'skills'));
   project('shared', path.join('.agents', 'skills'));
   if (workspace) scanCommands(path.join(workspace, '.claude', 'commands'), { tool: 'claude', scope: 'project' }, raw);
 
@@ -174,6 +176,7 @@ function collect(workspace) {
   user('grok', path.join(process.env.GROK_HOME || path.join(h, '.grok'), 'skills'));
   user('pi', path.join(h, '.pi', 'agent', 'skills'));
   user('hermes', path.join(require('./models').hermesHome(), 'skills'));
+  user('dsh', path.join(process.env.DSH_HOME || path.join(h, '.dsh'), 'skills'));
   user('shared', path.join(h, '.agents', 'skills'));
   claudePlugins(raw);
   codexPlugins(raw);
@@ -231,7 +234,9 @@ function skillSection(skills, adapter) {
   for (const s of skills) {
     // Grok Build 自己也会读 Claude 的技能（~/.claude、项目里的 .claude，插件里的除外）和 .agents/skills
     const grokHas = adapter === 'grok' && (!s.tools.length || (s.tools.includes('claude') && s.scope !== 'plugin'));
-    if (s.tools.includes(adapter) || grokHas) {
+    // DeepSeek Harness 也会读通用的 .agents/skills
+    const dshHas = adapter === 'dsh' && !s.tools.length;
+    if (s.tools.includes(adapter) || grokHas || dshHas) {
       parts.push(`- /${s.name}：你那边已经装了这个技能，请用它来完成这一步。`);
       continue;
     }

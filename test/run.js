@@ -1042,7 +1042,12 @@ process.stdin.on('data', (d) => (input += d));
 process.stdin.on('end', () => {
   const pf = args.indexOf('--prompt-file');
   const prompt = pf >= 0 ? fs.readFileSync(args[pf + 1], 'utf8') : null;
-  fs.appendFileSync(process.env.FAKE_LOG, JSON.stringify({ args, input, prompt, promptFile: pf >= 0 ? args[pf + 1] : null }) + '\\n');
+  // DeepSeek Harness：记下这次运行的权限变量和 --patch 文件；Key 只记测试用的（不把真的 Key 写进日志）
+  const pt = args.indexOf('--patch');
+  const k = process.env.DEEPSEEK_API_KEY || '';
+  const env = { DSH_PERMISSION_MODE: process.env.DSH_PERMISSION_MODE || '', DEEPSEEK_API_KEY: k.startsWith('sk-test') ? k : k ? '(other)' : '' };
+  const patch = pt >= 0 ? fs.readFileSync(args[pt + 1], 'utf8') : null;
+  fs.appendFileSync(process.env.FAKE_LOG, JSON.stringify({ args, input, prompt, promptFile: pf >= 0 ? args[pf + 1] : null, env, patch }) + '\\n');
   const sc = JSON.parse(process.env.FAKE_SCRIPT || '{}');
   if (sc.failIf && args.includes(sc.failIf)) { process.stderr.write(sc.failText || 'error'); process.exit(2); }
   const s = args.indexOf('-s');
@@ -1267,6 +1272,76 @@ test('Hermes：prompt 从 stdin 读，stream-json 的工具（旧版没有调用
   assert.strictEqual(full.calls[0].input, '你好');
   const bad = await runFake('hermes', { lines: [{ type: 'result', session_id: 'h-2', exit_code: 1, text: '', error: 'No provider configured' }], exit: 1 });
   assert.strictEqual(bad.res.error, 'No provider configured');
+});
+
+test('DeepSeek Harness：dsh headless --json，任务走 stdin；模型和思考强度写进 --patch，权限和 Key 走环境变量；续会话、缺 Key、会话不存在', async () => {
+  const help = '  --json             write newline-delimited run events\n  --session-id <id>  adopt the persisted Session';
+  const r = await runFake('dsh', {
+    help,
+    agent: { permission: 'readonly', model: 'deepseek-v4-pro', effort: 'none', api: { apiKey: 'sk-test-dsh' } },
+    lines: [
+      { type: 'session', sessionId: 'session-1', cwd: 'x' },
+      { type: 'status', phase: 'turn_start', turn: 1 },
+      { type: 'status', phase: 'step_start', turn: 1, step: 1 },
+      { type: 'thinking', text: '想一下' },
+      { type: 'text', text: '我先看看' },
+      { type: 'tool_call', callId: 'c1', tool: 'read', input: { file_path: 'src/a.js' } },
+      { type: 'tool_result', callId: 'c1', status: 'completed', result: '...' },
+      { type: 'status', phase: 'step_end', turn: 1, step: 1, usage: { inputTokens: 100, outputTokens: 20, cacheReadTokens: 30 } },
+      { type: 'status', phase: 'step_start', turn: 1, step: 2 },
+      { type: 'text', text: '看完了，没问题。' },
+      { type: 'status', phase: 'step_end', turn: 1, step: 2, usage: { inputTokens: 50, outputTokens: 10 } },
+      { type: 'status', phase: 'turn_end', turn: 1, reason: { kind: 'completed' } },
+      { type: 'final', text: '看完了，没问题。' },
+    ],
+  });
+  assert.strictEqual(r.res.error, null);
+  assert.strictEqual(r.res.text, '看完了，没问题。');
+  assert.strictEqual(r.res.sessionId, 'session-1');
+  assert.deepStrictEqual(r.res.usage, [{ model: 'deepseek-v4-pro', input: 150, output: 30, cacheRead: 30, cacheWrite: 0 }]);
+  assert.deepStrictEqual(notes(r.events), ['我先看看', '看完了，没问题。']); // 工具调用前一段、最后一段（最后一段和最终回复一样，接力那边会去掉）
+  const [use, done] = tools(r.events);
+  assert.deepStrictEqual([use.k, use.d, use.s, done.id, done.s], ['read', 'src/a.js', 'running', 'c1', 'ok']);
+  const call = r.calls[0];
+  assert.strictEqual(call.input, '你好');
+  assert.deepStrictEqual([call.args[0], call.args[1], ...call.args.slice(3)], ['headless', '--patch', '--json', '-']);
+  assert.strictEqual(call.patch, '- id: agent-default-model\n  config:\n    provider: "deepseek-official"\n    model: "deepseek-v4-pro"\n    reasoningEffort: "off"\n');
+  // patch 会整个替换这一项的配置，所以只选了思考强度时也要写上默认的提供商和模型
+  assert.strictEqual(
+    require('../server/adapters/dsh').patchText({ effort: 'max' }),
+    '- id: agent-default-model\n  config:\n    provider: "deepseek-official"\n    model: "deepseek-flash"\n    reasoningEffort: "max"\n'
+  );
+  assert.deepStrictEqual(call.env, { DSH_PERMISSION_MODE: 'read-only', DEEPSEEK_API_KEY: 'sk-test-dsh' });
+  // 续会话：没选模型和强度就不写 patch；完全权限
+  const again = await runFake('dsh', { help, agent: { permission: 'full' }, sessionId: 'session-1', lines: [{ type: 'final', text: 'ok' }] });
+  assert.deepStrictEqual(again.calls[0].args, ['headless', '--json', '--session-id', 'session-1', '-']);
+  assert.strictEqual(again.calls[0].patch, null);
+  assert.strictEqual(again.calls[0].env.DSH_PERMISSION_MODE, 'danger-full-access');
+  // 「提供商/模型」拆成 provider 和 model
+  const { patchText } = require('../server/adapters/dsh');
+  assert.strictEqual(patchText({ model: 'my-proxy/qwen3-coder', effort: 'high' }), '- id: agent-default-model\n  config:\n    provider: "my-proxy"\n    model: "qwen3-coder"\n    reasoningEffort: "high"\n');
+  // 缺 Key：给出怎么填的提示
+  const noKey = await runFake('dsh', {
+    help,
+    exit: 1,
+    stderr: 'dsh: MISSING_CREDENTIAL: llm-deepseek: no API key',
+    lines: [
+      { type: 'session', sessionId: 'session-2', cwd: 'x' },
+      { type: 'status', phase: 'turn_end', turn: 1, reason: { kind: 'error', error: { message: 'llm-deepseek: no API key for provider route "deepseek-official"', code: 'MISSING_CREDENTIAL' } } },
+      { type: 'final', text: '' },
+    ],
+  });
+  assert.match(noKey.res.error, /DEEPSEEK_API_KEY/);
+  // 会话不存在（数据被删了）：报错能被认出来，接力会换一个新会话重来
+  const gone = await runFake('dsh', { help, exit: 1, sessionId: 'session-x', lines: [{ type: 'error', message: 'session "session-x" does not exist; omit --session-id to start a new Session' }] });
+  assert.match(gone.res.error, require('../server/adapters/common').RESUME_FAIL);
+  // 改了模型 / 思考强度 / 权限：DeepSeek Harness 要换新会话，别的工具不用
+  const { sessionOutdated } = require('../server/adapters');
+  assert.strictEqual(sessionOutdated({ adapter: 'dsh', model: '' }, { adapter: 'dsh', model: 'deepseek-v4-pro' }), true);
+  assert.strictEqual(sessionOutdated({ adapter: 'dsh', permission: 'edit' }, { adapter: 'dsh', permission: 'full' }), true);
+  assert.strictEqual(sessionOutdated({ adapter: 'dsh', name: 'A' }, { adapter: 'dsh', name: 'B' }), false);
+  assert.strictEqual(sessionOutdated({ adapter: 'codex', model: 'a' }, { adapter: 'codex', model: 'b' }), false);
+  assert.strictEqual(sessionOutdated({ adapter: 'codex' }, { adapter: 'dsh' }), true);
 });
 
 test('模型目录：pi 的模型表、grok models 的输出、Hermes 和 Grok 设置里的默认模型、Gemini 的别名', () => {

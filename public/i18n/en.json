@@ -705,5 +705,17 @@
   "关于 {app}": "About {app}",
   "{app} 启动失败": "{app} couldn't start",
   "  {app} 已启动 →  ": "  {app} is running →  ",
-  "白天叫 Dayshift，晚上叫 Nightshift：名字和图标跟着浅色、深色外观一起换。": "Dayshift by day, Nightshift by night: the name and icon follow the light or dark appearance."
+  "白天叫 Dayshift，晚上叫 Nightshift：名字和图标跟着浅色、深色外观一起换。": "Dayshift by day, Nightshift by night: the name and icon follow the light or dark appearance.",
+  "DeepSeek 官方的开源智能体（dsh），用 DeepSeek API Key": "DeepSeek's official open-source agent (dsh), uses a DeepSeek API key",
+  "列表是 DeepSeek Harness 自带的模型。在 dsh 里接了别的提供商的话，选「自己输入……」写成「提供商/模型」。改了模型、思考强度或权限，下一轮会换一个新会话。": "These are the models DeepSeek Harness ships with. If you connected another provider in dsh, choose \"Enter manually…\" and write provider/model. Changing the model, thinking effort or permissions starts a new session on the next turn.",
+  "只读沙箱：能看文件、运行只读命令，不能改动": "Read-only sandbox: can read files and run read-only commands, but cannot change anything",
+  "能改项目文件夹里的文件，命令在沙箱里运行；需要批准的操作不会执行": "Can change files in the project folder; commands run in a sandbox, and anything that needs approval doesn't run",
+  "关闭沙箱，能运行任何命令（danger-full-access）": "Sandbox off, can run any command (danger-full-access)",
+  "sk-…（不填就用系统环境变量 DEEPSEEK_API_KEY）": "sk-… (leave blank to use the DEEPSEEK_API_KEY environment variable)",
+  "Key 只保存在这台电脑的 data 文件夹里，运行时交给 DeepSeek Harness，不会发给别人。": "The key is stored only in this computer's data folder and is passed to DeepSeek Harness when it runs. It isn't sent to anyone else.",
+  "更强，适合复杂的任务": "Stronger, for complex tasks",
+  "这个版本的 DeepSeek Harness 太旧，不支持 dsh headless --json。请先升级（命令行里运行 {cmd}），再点左下角「重新检测」。": "This version of DeepSeek Harness is too old and doesn't support dsh headless --json. Upgrade it first (run {cmd} in a terminal), then click \"Re-detect\" at the bottom left.",
+  "DeepSeek Harness 还没有 API Key：在成员设置里填上 DeepSeek 的 API Key，或者在系统环境变量里设置 DEEPSEEK_API_KEY。": "DeepSeek Harness has no API key yet. Enter your DeepSeek API key in the member's settings, or set the DEEPSEEK_API_KEY environment variable.",
+  "DeepSeek Harness 运行出错（{kind}）": "DeepSeek Harness failed ({kind})",
+  "DeepSeek Harness 运行出错": "DeepSeek Harness failed"
 }
