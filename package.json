@@ -1,7 +1,7 @@
 {
   "name": "agent-chat",
   "productName": "Nightshift",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "description": "让多个 AI（Claude Code、Codex、OpenCode、各种 API 模型）在同一个项目里分工协作、互相交流的桌面工具",
   "author": "Agent Chat",
   "private": true,
