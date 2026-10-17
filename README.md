@@ -1,8 +1,26 @@
-# Nightshift：让多个 AI 在同一个项目里协作
+<div align="center">
+
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="build/icon-day.png">
+  <img src="build/icon.png" width="112" height="112" alt="Nightshift 的图标">
+</picture>
+
+# Nightshift
+
+让多个 AI 在同一个项目里协作
+
+<p><a href="https://github.com/Lauk1z/nightshift/releases/latest">下载 Windows 安装版</a> · <a href="README.en.md">English</a> · <a href="README.zh-Hant.md">繁體中文</a></p>
+
+</div>
+
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="docs/screenshots/zh-Hans/main-light.png">
+  <img src="docs/screenshots/zh-Hans/main-dark.png" alt="Nightshift 的主界面：GPT 写好设计交给 Claude，Claude 写完代码后 @DeepSeek 测试，DeepSeek 正在运行测试；输入框上方的接力条显示 你、GPT、Claude、DeepSeek">
+</picture>
 
 把 Claude Code、Codex（ChatGPT）、OpenCode、Gemini CLI、Grok Build、pi、Hermes Agent、DeepSeek Harness，以及 DeepSeek、通义千问、Kimi 这类 API 模型拉进同一个「群聊」，让它们共用一个项目文件夹、自己分工、互相交接。
 
-你只要提需求，比如「做一个待办清单网页，@GPT 先出设计，再交给 Claude 实现」。之后的流程是：
+你只要提需求，比如 `做一个待办清单网页，@GPT 先出设计，再交给 Claude 实现`。之后的流程是：
 
 1. **GPT** 读需求，把设计方案写进 `docs/design.md`，在群里 `@Claude 请按方案实现`
 2. **Claude** 被唤醒，读设计、写代码，完成后 `@用户 请验收`
@@ -11,6 +29,8 @@
 不用再在几个 AI 之间来回复制粘贴。
 
 名字跟着外观换：深色时叫 **Nightshift**（夜班，图标是月亮里亮着提示符 `>_`），你去睡觉，它们值夜班；切到浅色就变成 **Dayshift**（日班，图标是太阳里写着 `>_`）。窗口标题、任务栏图标和「关于」里的名字都会跟着变；exe、安装包和开始菜单里的名字固定是 Nightshift。
+
+<p>在 GitHub 上看这份说明也一样：GitHub 是浅色外观时，最上面的图标和截图就是 Dayshift。</p>
 
 以前叫 Agent Chat。从旧版本升级不用做任何事：项目、聊天记录和设置都还在原来的数据文件夹里。
 
@@ -134,6 +154,8 @@
 
 账户菜单里的「用量」按模型统计 token：成员每跑完一轮（群聊或侧边对话），这一轮用了多少都会记下来。
 
+<p align="center"><img src="docs/screenshots/zh-Hans/usage.png" width="800" alt="用量页：累计 Token 数等五个数字、最近一年的 Token 活动热力图和各模型用量"></p>
+
 - 最上面是几个数：累计 Token 数、单日峰值、最长一轮用时、最长连续天数、当前连续天数。
 - 「Token 活动」是最近一年的图，可以切换三种看法：
   - **每天**：热力图，一格一天，颜色越深用得越多。
@@ -153,6 +175,8 @@
 ## 右侧面板
 
 像 Claude、Codex 桌面版那样从右边展开，顶部有四个页面。拖动面板左边缘可以调宽度，双击恢复默认。窗口太窄时，面板会浮在对话上面。
+
+<img src="docs/screenshots/zh-Hans/preview.png" alt="右侧面板的「文件」页正在预览成员做好的待办清单网页；左边是 DeepSeek 测完后的回复和文件卡片">
 
 **文件**
 
@@ -231,7 +255,9 @@
 
 ## 给每个成员选模型和思考强度
 
-点标题栏里的成员头像打开成员面板，再点一个成员打开它的设置，最上面就是「模型」和「思考强度」。每个成员单独设置，互不影响，不同会话里的成员也是各自独立的。比如设计用 GPT-6-Luna 配「低」，开发用 deepseek-v4-pro 配「高」。
+点标题栏里的成员头像打开成员面板，再点一个成员打开它的设置，「接入方式」下面就是「模型」和「思考强度」。每个成员单独设置，互不影响，不同会话里的成员也是各自独立的。比如设计用 GPT-6-Luna 配「低」，开发用 deepseek-v4-pro 配「高」。
+
+<p align="center"><img src="docs/screenshots/zh-Hans/member.png" width="640" alt="成员设置：接入方式（八个命令行工具和 API 模型）、模型和思考强度"></p>
 
 模型列表从各个工具自己那里读取，你在那边换了配置，这里点「刷新列表」就能看到：
 
@@ -387,6 +413,6 @@ node scripts/i18n-keys.js
 
 它会列出 `en.json` 里还缺的翻译（补上即可），然后运行 `node scripts/i18n-hant.js` 重新生成繁体词典和繁体的使用说明（需要先 `npm install`，用到 opencc-js）。`npm test` 也会检查词典是否齐全。
 
-使用说明有三份，账户菜单里的「使用说明」按界面语言显示：`README.md`（简体，以它为准）、`README.en.md`（英文，改了简体版要跟着改）、`README.zh-Hant.md`（繁体，生成的，不要手改）。
+使用说明有三份，账户菜单里的「使用说明」按界面语言显示：`README.md`（简体，以它为准）、`README.en.md`（英文，改了简体版要跟着改）、`README.zh-Hant.md`（繁体，生成的，不要手改）。只给 GitHub 看的内容（最上面的图标、截图、语言链接）写成单独一行的 HTML，界面里的「使用说明」会去掉这些行；截图放在 `docs/screenshots/<语言>/`。
 
 要接入新的 AI 工具，在 `server/adapters/` 里加一个文件，实现 `run({ agent, cwd, prompt, sessionId, emit })`，返回 `{ done, cancel }`。可以参照 `codex.js`。

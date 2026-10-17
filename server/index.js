@@ -359,11 +359,24 @@ route('GET', '/api/readme', async () => {
   const lang = settings.get().language;
   for (const name of [`README.${lang}.md`, 'README.md']) {
     try {
-      return { text: fs.readFileSync(path.join(ROOT, name), 'utf8') };
+      return { text: readmeForApp(fs.readFileSync(path.join(ROOT, name), 'utf8')) };
     } catch {}
   }
   throw new HttpError(404, tr('找不到使用说明'));
 });
+
+// README 里只给 GitHub 看的部分（图标、截图、语言链接）都写成单独一行的 HTML。
+// 界面里的 Markdown 不显示 HTML 和图片，所以把这些整行去掉；代码块里的不动
+function readmeForApp(text) {
+  const out = [];
+  let fence = false;
+  for (const line of String(text).split(/\r?\n/)) {
+    if (/^\s*(```|~~~)/.test(line)) fence = !fence;
+    else if (!fence && /^\s*(<\/?[a-z][\w-]*(\s[^>]*)?\/?>|<!--)/i.test(line)) continue;
+    out.push(line);
+  }
+  return out.join('\n').replace(/\n{3,}/g, '\n\n').replace(/^\n+/, '');
+}
 
 route('POST', '/api/open-data', async () => {
   openPath(DATA);
@@ -1040,7 +1053,7 @@ async function start({ dataDir, port = 3210, desktop = false } = {}) {
   };
 }
 
-module.exports = { start };
+module.exports = { start, readmeForApp };
 
 // ---------- 命令行入口 ----------
 if (require.main === module) {

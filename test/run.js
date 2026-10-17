@@ -919,6 +919,39 @@ test('界面语言：每个词典都翻译了代码里所有的文字，占位�
   assert.deepStrictEqual(parseMentions('@' + en['所有人'], A), ['all']);
 });
 
+test('使用说明：只给 GitHub 看的整行 HTML（图标、截图、语言链接）去掉，代码块里的不动', () => {
+  const { readmeForApp } = require('../server');
+  const src = [
+    '<div align="center">',
+    '',
+    '<picture>',
+    '  <source media="(prefers-color-scheme: light)" srcset="build/icon-day.png">',
+    '  <img src="build/icon.png" width="112" alt="Nightshift">',
+    '</picture>',
+    '',
+    '# Nightshift',
+    '',
+    '<p><a href="README.en.md">English</a></p>',
+    '',
+    '</div>',
+    '',
+    '正文里的 <b>标签</b> 不是整行，留着',
+    '<!-- 注释 -->',
+    '',
+    '```html',
+    '<p>代码</p>',
+    '```',
+    '',
+  ].join('\n');
+  assert.strictEqual(readmeForApp(src), '# Nightshift\n\n正文里的 <b>标签</b> 不是整行，留着\n\n```html\n<p>代码</p>\n```\n');
+  // 三份使用说明都以标题开头，没有剩下的 HTML 行
+  for (const f of ['README.md', 'README.en.md', 'README.zh-Hant.md']) {
+    const text = readmeForApp(fs.readFileSync(path.join(__dirname, '..', f), 'utf8'));
+    assert.match(text, /^# Nightshift\n/, f);
+    assert.doesNotMatch(text, /^\s*<(picture|source|img|div|p)\b/m, f);
+  }
+});
+
 test('设置和用量接口；换了语言，服务端的报错和 boot.js 跟着换', async () => {
   const { start } = require('../server');
   const dir = tmp();
@@ -955,6 +988,11 @@ test('设置和用量接口；换了语言，服务端的报错和 boot.js 跟�
     assert.strictEqual((await call('PATCH', '/api/settings', { language: 'klingon' })).json().language, 'en');
     const env = (await call('GET', '/api/env')).json();
     assert.strictEqual(env.adapters.openai.label, 'API model');
+    // 英文界面的使用说明是 README.en.md，去掉了只给 GitHub 看的图标和截图
+    const help = (await call('GET', '/api/readme')).json().text;
+    assert.match(help, /^# Nightshift\n/);
+    assert.match(help, /^Several AIs working together on one project$/m);
+    assert.doesNotMatch(help, /<picture|<img/);
     const u = (await call('GET', '/api/usage')).json();
     assert.deepStrictEqual([u.runs, u.models, u.daily], [0, [], []]);
     // 项目是一个文件夹，里面可以有好几个会话，每个会话自己配成员

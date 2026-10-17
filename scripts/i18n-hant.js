@@ -51,8 +51,17 @@ fs.writeFileSync(path.join(__dirname, '..', 'public', 'i18n', 'zh-Hant.json'), J
 console.log(`zh-Hant.json：${Object.keys(out).length} 条`);
 
 // 使用说明也转一份：README.md → README.zh-Hant.md
+// 截图换成繁体界面的；最上面的语言链接改成指向简体版和英文版
+const README_FIX = [
+  ['docs/screenshots/zh-Hans/', 'docs/screenshots/zh-Hant/'],
+  ['<a href="README.en.md">English</a> · <a href="README.zh-Hant.md">繁體中文</a>', '<a href="README.md">简体中文</a> · <a href="README.en.md">English</a>'],
+];
 const root = path.join(__dirname, '..');
 let readme = convert(fs.readFileSync(path.join(root, 'README.md'), 'utf8'));
 for (const [a, b] of FIX) readme = readme.split(a).join(b);
+for (const [a, b] of README_FIX) {
+  if (!readme.includes(a)) throw new Error(`README.md 里找不到：${a}`);
+  readme = readme.split(a).join(b);
+}
 fs.writeFileSync(path.join(root, 'README.zh-Hant.md'), readme, 'utf8');
 console.log('README.zh-Hant.md');

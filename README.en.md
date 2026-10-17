@@ -1,8 +1,26 @@
-# Nightshift: several AIs working together on one project
+<div align="center">
+
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="build/icon-day.png">
+  <img src="build/icon.png" width="112" height="112" alt="Nightshift icon">
+</picture>
+
+# Nightshift
+
+Several AIs working together on one project
+
+<p><a href="https://github.com/Lauk1z/nightshift/releases/latest">Download for Windows</a> · <a href="README.md">简体中文</a> · <a href="README.zh-Hant.md">繁體中文</a></p>
+
+</div>
+
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="docs/screenshots/en/main-light.png">
+  <img src="docs/screenshots/en/main-dark.png" alt="The Nightshift main window: GPT wrote the design and handed it to Claude, Claude built it and asked @DeepSeek to test, and DeepSeek is running the tests; the relay bar above the message box shows You, GPT, Claude, DeepSeek">
+</picture>
 
 Nightshift puts Claude Code, Codex (ChatGPT), OpenCode, Gemini CLI, Grok Build, pi, Hermes Agent, DeepSeek Harness and API models such as DeepSeek, Qwen and Kimi into one "group chat". They share a project folder, split up the work and hand it off to each other.
 
-You just describe what you want, for example "Build a to-do list web page. @GPT drafts the design first, then hands it to Claude to build." From there:
+You just describe what you want, for example `Build a to-do list web page. @GPT drafts the design first, then hands it to Claude to build.` From there:
 
 1. **GPT** reads the request, writes the design to `docs/design.md`, and posts `@Claude please build it from the design`
 2. **Claude** wakes up, reads the design, writes the code, then posts `@user ready for review`
@@ -11,6 +29,8 @@ You just describe what you want, for example "Build a to-do list web page. @GPT 
 No more copying and pasting between AIs.
 
 The name follows the appearance: in dark mode it's **Nightshift** (the icon is a moon with a `>_` prompt), working the night shift while you sleep; switch to light mode and it becomes **Dayshift** (a sun with `>_` in it). The window title, taskbar icon and About dialog change with it; the exe, installer and Start menu always say Nightshift.
+
+<p>This page does it too: when GitHub is in light mode, the icon and screenshot at the top show Dayshift.</p>
 
 It used to be called Agent Chat. Upgrading needs nothing from you: projects, chat history and settings stay in the same data folder.
 
@@ -134,6 +154,8 @@ Click your avatar and name at the bottom left to open the account menu (just lik
 
 "Usage" in the account menu counts tokens by model: each time a member finishes a turn (in the group chat or the side chat), the tokens used in that turn are recorded.
 
+<p align="center"><img src="docs/screenshots/en/usage.png" width="800" alt="The Usage page: five numbers such as total tokens, a heatmap of token activity over the past year, and usage by model"></p>
+
 - At the top are a few numbers: total tokens, peak day, longest turn, longest streak and current streak.
 - "Token activity" shows the last year in three views:
   - **Daily**: a heatmap with one square per day; the darker the square, the more tokens.
@@ -153,6 +175,8 @@ Notes:
 ## The side panel
 
 Like in the Claude and Codex desktop apps, it slides out from the right with four pages at the top. Drag its left edge to resize; double-click to reset. When the window is narrow, the panel floats over the chat.
+
+<img src="docs/screenshots/en/preview.png" alt="The Files page of the side panel previewing the to-do list page the members built; on the left, DeepSeek's reply after testing, with its file cards">
 
 **Files**
 
@@ -231,7 +255,9 @@ Dependencies and build output (`node_modules`, `dist`, `build` and so on) and fo
 
 ## Choosing each member's model and thinking effort
 
-Click the member avatars in the title bar to open the members panel, then click a member to open its settings; "Model" and "Thinking effort" are at the top. Each member has its own settings, including members of different chats, for example GPT-6-Luna on "Low" for design and deepseek-v4-pro on "High" for development.
+Click the member avatars in the title bar to open the members panel, then click a member to open its settings; "Model" and "Thinking effort" are right under "Agent type". Each member has its own settings, including members of different chats, for example GPT-6-Luna on "Low" for design and deepseek-v4-pro on "High" for development.
+
+<p align="center"><img src="docs/screenshots/en/member.png" width="640" alt="Member settings: the agent type (eight command-line tools or an API model), the model and the thinking effort"></p>
 
 Model lists come from each tool itself. If you change a tool's configuration, click "Refresh list" here to see it:
 
@@ -387,6 +413,6 @@ node scripts/i18n-keys.js
 
 It lists any translations missing from `en.json` (add them), then run `node scripts/i18n-hant.js` to regenerate the Traditional Chinese dictionary and user guide (run `npm install` first; it uses opencc-js). `npm test` also checks that the dictionaries are complete.
 
-The user guide comes in three versions, and "User guide" in the account menu shows the one for the interface language: `README.md` (Simplified Chinese, the original), `README.en.md` (English; update it when the original changes) and `README.zh-Hant.md` (Traditional Chinese, generated, don't edit it by hand).
+The user guide comes in three versions, and "User guide" in the account menu shows the one for the interface language: `README.md` (Simplified Chinese, the original), `README.en.md` (English; update it when the original changes) and `README.zh-Hant.md` (Traditional Chinese, generated, don't edit it by hand). Content meant only for GitHub (the icon, screenshots and language links at the top) is written as HTML on lines of its own, and the in-app user guide leaves those lines out. Screenshots are in `docs/screenshots/<language>/`.
 
 To add a new AI tool, add a file in `server/adapters/` that implements `run({ agent, cwd, prompt, sessionId, emit })` and returns `{ done, cancel }`. `codex.js` is a good example to follow.
