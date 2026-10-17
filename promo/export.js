@@ -1,6 +1,8 @@
 'use strict';
 // 把 promo.html 导出成视频或截图。用项目里装好的 Electron，不需要 ffmpeg：
-//   npx electron promo/export.js                          → promo/Nightshift-promo.mp4（1920×1080，30 帧，H.264）
+//   npx electron promo/export.js                          → promo/Nightshift-promo.mp4（1920×1080，30 帧，H.264，带背景音乐）
+//   npx electron promo/export.js --no-music               → 不带背景音乐
+//   npx electron promo/export.js --music-wav 文件.wav      → 只导出背景音乐（music.js）
 //   npx electron promo/export.js --stills 2,7.5,12 [--dir 文件夹]  → 那几秒的截图（检查画面用）
 const { app, BrowserWindow } = require('electron');
 const fs = require('fs');
@@ -11,6 +13,8 @@ const arg = (name) => (args.includes(name) ? args[args.indexOf(name) + 1] : null
 const stills = arg('--stills');
 const dir = arg('--dir') || path.join(__dirname, 'stills');
 const out = arg('--out') || path.join(__dirname, 'Nightshift-promo.mp4');
+const musicWav = arg('--music-wav');
+const music = !args.includes('--no-music');
 
 app.commandLine.appendSwitch('force-device-scale-factor', '1');
 app.whenReady().then(async () => {
@@ -22,7 +26,11 @@ app.whenReady().then(async () => {
   });
   try {
     await win.loadFile(path.join(__dirname, 'promo.html'), { query: { mode: 'export' } });
-    if (stills) {
+    if (musicWav) {
+      const bytes = await win.webContents.executeJavaScript('musicWav()');
+      fs.writeFileSync(musicWav, Buffer.from(bytes));
+      console.log(`[done] ${musicWav}  ${(bytes.length / 1048576).toFixed(1)} MB`);
+    } else if (stills) {
       fs.mkdirSync(dir, { recursive: true });
       for (const t of stills.split(',').map(Number)) {
         const url = await win.webContents.executeJavaScript(`still(${t})`);
@@ -31,7 +39,7 @@ app.whenReady().then(async () => {
       console.log(`[stills] ${stills} → ${dir}`);
     } else {
       const started = Date.now();
-      const bytes = await win.webContents.executeJavaScript('exportMP4()');
+      const bytes = await win.webContents.executeJavaScript(`exportMP4({ music: ${music} })`);
       fs.writeFileSync(out, Buffer.from(bytes));
       console.log(`[done] ${out}  ${(bytes.length / 1048576).toFixed(1)} MB  ${Math.round((Date.now() - started) / 1000)} 秒`);
     }

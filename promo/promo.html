@@ -33,6 +33,7 @@
   <body>
     <canvas id="c" width="1920" height="1080"></canvas>
     <div class="hud" id="hud">空格 暂停 / 播放　← → 前后 2 秒</div>
+    <script src="music.js"></script>
     <script>
       'use strict';
       // Nightshift 一分钟宣传动画（1920×1080，30 帧）。
@@ -1290,8 +1291,9 @@
         }
       }
 
-      // ---------- 导出：每帧交给 WebCodecs 编成 H.264，再自己封装成 MP4 ----------
-      function mp4(samples, avcC, w, h, fps) {
+      // ---------- 导出：每帧交给 WebCodecs 编成 H.264，背景音乐（music.js）编成 AAC，再自己封装成 MP4 ----------
+      // audio：{ samples, asc, sampleRate, channels, bitrate }，没有就是无声的视频
+      function mp4(samples, avcC, w, h, fps, audio) {
         const enc = new TextEncoder();
         const u32 = (v) => {
           const b = new Uint8Array(4);
@@ -1328,10 +1330,67 @@
         const ftyp = box('ftyp', enc.encode('isom'), u32(0x200), enc.encode('isom'), enc.encode('iso2'), enc.encode('avc1'), enc.encode('mp41'));
         const keys = [];
         samples.forEach((s, i) => s.key && keys.push(u32(i + 1)));
+        const videoLen = samples.reduce((a, s) => a + s.data.length, 0);
+
+        // 音轨：AAC，每帧 1024 个采样，所有帧连成一块放在视频数据后面
+        const AAC_FRAME = 1024;
+        const na = audio ? audio.samples.length : 0;
+        const audioMs = audio ? Math.round((na * AAC_FRAME * 1000) / audio.sampleRate) : 0;
+        // MPEG-4 描述符：标签 + 长度 + 内容
+        const desc = (tag, ...parts) => {
+          const len = parts.reduce((a, p) => a + p.length, 0);
+          const b = new Uint8Array(2 + len);
+          b[0] = tag;
+          b[1] = len; // 这里的描述符都不到 128 字节
+          let o = 2;
+          for (const p of parts) {
+            b.set(p, o);
+            o += p.length;
+          }
+          return b;
+        };
+        const audioTrak = (offset) => {
+          const esds = full(
+            'esds',
+            0,
+            0,
+            desc(
+              0x03, // ES_Descriptor
+              u16(2),
+              new Uint8Array([0]),
+              desc(0x04, new Uint8Array([0x40, 0x15]), zeros(3), u32(audio.bitrate), u32(audio.bitrate), desc(0x05, audio.asc)), // AAC，音频流
+              desc(0x06, new Uint8Array([0x02]))
+            )
+          );
+          const mp4a = box('mp4a', zeros(6), u16(1), zeros(8), u16(audio.channels), u16(16), u16(0), u16(0), u32(audio.sampleRate * 65536), esds);
+          return box(
+            'trak',
+            full('tkhd', 0, 3, u32(0), u32(0), u32(2), u32(0), u32(audioMs), zeros(8), u16(0), u16(1), u16(0x0100), u16(0), matrix, u32(0), u32(0)),
+            box(
+              'mdia',
+              full('mdhd', 0, 0, u32(0), u32(0), u32(audio.sampleRate), u32(na * AAC_FRAME), u16(0x55c4), u16(0)),
+              full('hdlr', 0, 0, u32(0), enc.encode('soun'), zeros(12), enc.encode('SoundHandler\0')),
+              box(
+                'minf',
+                full('smhd', 0, 0, u16(0), u16(0)),
+                box('dinf', full('dref', 0, 0, u32(1), full('url ', 0, 1))),
+                box(
+                  'stbl',
+                  full('stsd', 0, 0, u32(1), mp4a),
+                  full('stts', 0, 0, u32(1), u32(na), u32(AAC_FRAME)),
+                  full('stsc', 0, 0, u32(1), u32(1), u32(na), u32(1)),
+                  full('stsz', 0, 0, u32(0), u32(na), ...audio.samples.map((s) => u32(s.length))),
+                  full('stco', 0, 0, u32(1), u32(offset))
+                )
+              )
+            )
+          );
+        };
+
         const moov = (offset) =>
           box(
             'moov',
-            full('mvhd', 0, 0, u32(0), u32(0), u32(1000), u32(ms), u32(0x00010000), u16(0x0100), zeros(10), matrix, zeros(24), u32(2)),
+            full('mvhd', 0, 0, u32(0), u32(0), u32(1000), u32(Math.max(ms, audioMs)), u32(0x00010000), u16(0x0100), zeros(10), matrix, zeros(24), u32(audio ? 3 : 2)),
             box(
               'trak',
               full('tkhd', 0, 3, u32(0), u32(0), u32(1), u32(0), u32(ms), zeros(8), u16(0), u16(0), u16(0), u16(0), matrix, u32(w << 16), u32(h << 16)),
@@ -1354,10 +1413,12 @@
                   )
                 )
               )
-            )
+            ),
+            ...(audio ? [audioTrak(offset + videoLen)] : [])
           );
         const head = moov(0).length;
-        const dataLen = samples.reduce((a, s) => a + s.data.length, 0);
+        const audioLen = audio ? audio.samples.reduce((a, s) => a + s.length, 0) : 0;
+        const dataLen = videoLen + audioLen;
         const out = new Uint8Array(ftyp.length + head + 8 + dataLen);
         out.set(ftyp, 0);
         out.set(moov(ftyp.length + head + 8), ftyp.length); // moov 放在前面，网页和手机上能边下边放
@@ -1369,11 +1430,47 @@
           out.set(s.data, o);
           o += s.data.length;
         }
+        for (const s of audio ? audio.samples : []) {
+          out.set(s, o);
+          o += s.length;
+        }
         return out;
       }
 
-      async function exportMP4() {
+      // 背景音乐：合成好（music.js）以后编成 AAC
+      async function encodeMusic() {
+        const buf = await window.renderMusic();
+        const BITRATE = 192000;
+        const chunks = [];
+        let asc = null;
+        let failed = null;
+        const encoder = new AudioEncoder({
+          output: (chunk, meta) => {
+            if (meta && meta.decoderConfig && meta.decoderConfig.description) asc = new Uint8Array(meta.decoderConfig.description);
+            const data = new Uint8Array(chunk.byteLength);
+            chunk.copyTo(data);
+            chunks.push(data);
+          },
+          error: (e) => (failed = e),
+        });
+        encoder.configure({ codec: 'mp4a.40.2', sampleRate: buf.sampleRate, numberOfChannels: buf.numberOfChannels, bitrate: BITRATE });
+        const step = buf.sampleRate; // 一秒一块
+        for (let i = 0; i < buf.length; i += step) {
+          const len = Math.min(step, buf.length - i);
+          const data = new Float32Array(len * buf.numberOfChannels);
+          for (let c = 0; c < buf.numberOfChannels; c++) data.set(buf.getChannelData(c).subarray(i, i + len), c * len);
+          encoder.encode(new AudioData({ format: 'f32-planar', sampleRate: buf.sampleRate, numberOfFrames: len, numberOfChannels: buf.numberOfChannels, timestamp: Math.round((i * 1e6) / buf.sampleRate), data }));
+        }
+        await encoder.flush();
+        if (failed) throw failed;
+        if (!asc) throw new Error('编码器没有给出 AudioSpecificConfig');
+        console.log(`[export] 背景音乐 ${chunks.length} 帧 AAC`);
+        return { samples: chunks, asc, sampleRate: buf.sampleRate, channels: buf.numberOfChannels, bitrate: BITRATE };
+      }
+
+      async function exportMP4({ music = true } = {}) {
         await ready;
+        const audio = music ? await encodeMusic() : null;
         const samples = [];
         let avcC = null;
         let failed = null;
@@ -1404,7 +1501,7 @@
         if (failed) throw failed;
         if (!avcC) throw new Error('编码器没有给出 avcC');
         console.log(`[export] ${samples.length} 帧，封装 MP4`);
-        return mp4(samples, avcC, W, H, FPS);
+        return mp4(samples, avcC, W, H, FPS, audio);
       }
 
       // 截某一刻的画面（检查用）
