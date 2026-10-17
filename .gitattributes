@@ -1,0 +1,5 @@
+# 统一用 LF 换行（批处理文件除外），免得 Windows 上 git 来回改换行符
+* text=auto eol=lf
+*.bat text eol=crlf
+*.png binary
+*.ico binary

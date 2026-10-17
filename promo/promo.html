@@ -1,0 +1,1458 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>Nightshift 宣传动画</title>
+    <style>
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+        background: #000;
+      }
+      body {
+        display: grid;
+        place-items: center;
+        overflow: hidden;
+      }
+      canvas {
+        display: block;
+        width: min(100vw, 177.78vh);
+        height: auto;
+        aspect-ratio: 16 / 9;
+      }
+      .hud {
+        position: fixed;
+        left: 12px;
+        bottom: 10px;
+        font: 12px/1.4 Consolas, monospace;
+        color: #8a8a8a;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="c" width="1920" height="1080"></canvas>
+    <div class="hud" id="hud">空格 暂停 / 播放　← → 前后 2 秒</div>
+    <script>
+      'use strict';
+      // Nightshift 一分钟宣传动画（1920×1080，30 帧）。
+      // 整段动画是时间 t（秒）的函数：draw(t) 画出那一刻的画面。所以既能在浏览器里实时播放，
+      // 也能一帧一帧地导出成视频（export.js 调用 exportMP4()）。
+      //
+      // 分镜：
+      //   0–6    夜里，一个光标在闪；月亮绕过来，拼成 Nightshift 的图标
+      //   6–20   天亮了，名字变成 Dayshift；界面升起来，你用 @ 派活，AI 之间自己接力、互相挑错
+      //   20–30  窗口收进项目文件夹，八种 AI 围过来，共用这个文件夹
+      //   30–44  天黑了，变回 Nightshift；时钟从 23:00 走到 06:42，接力一直没停
+      //   44–52  天又亮了：「早上好，做好了」
+      //   52–60  结尾：月亮和太阳并排，名字和一句话
+      const W = 1920;
+      const H = 1080;
+      const FPS = 30;
+      const DURATION = 60;
+      const cv = document.getElementById('c');
+      const ctx = cv.getContext('2d');
+
+      // ---------- 小工具 ----------
+      const clamp = (v, a = 0, b = 1) => Math.max(a, Math.min(b, v));
+      const lerp = (a, b, k) => a + (b - a) * k;
+      const seg = (t, a, b) => clamp((t - a) / (b - a));
+      const ease = {
+        out: (k) => 1 - Math.pow(1 - k, 3),
+        inOut: (k) => (k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2),
+        back: (k) => 1 + 2.4 * Math.pow(k - 1, 3) + 1.4 * Math.pow(k - 1, 2),
+        smooth: (k) => k * k * (3 - 2 * k),
+      };
+      // 进场 / 退场：a 到 b 之间显示，前后各 d 秒淡入淡出
+      const window01 = (t, a, b, d = 0.35) => Math.min(ease.out(seg(t, a, a + d)), 1 - ease.smooth(seg(t, b - d, b)));
+      const rgb = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+      const mixRgb = (a, b, k) => {
+        const x = rgb(a);
+        const y = rgb(b);
+        return x.map((v, i) => Math.round(lerp(v, y[i], k)));
+      };
+      const css = (c, a = 1) => (typeof c === 'string' ? (a === 1 ? c : `rgba(${rgb(c).join(',')},${a})`) : `rgba(${c.join(',')},${a})`);
+      // 固定种子的随机数：每次画出来的星星都在同一个位置
+      function rng(seed) {
+        return () => {
+          seed |= 0;
+          seed = (seed + 0x6d2b79f5) | 0;
+          let r = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+          r = (r + Math.imul(r ^ (r >>> 7), 61 | r)) ^ r;
+          return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
+        };
+      }
+
+      const SANS = '"Inter", "Noto Sans SC", "Microsoft YaHei UI", sans-serif';
+      const MONO = '"Cascadia Mono", "Consolas", monospace';
+      const font = (w, size, fam = SANS) => `${w} ${size}px ${fam}`;
+      function text(s, x, y, f, color, align = 'left', base = 'alphabetic') {
+        ctx.font = f;
+        ctx.fillStyle = color;
+        ctx.textAlign = align;
+        ctx.textBaseline = base;
+        ctx.fillText(s, x, y);
+      }
+      const measure = (s, f) => {
+        ctx.font = f;
+        return ctx.measureText(s).width;
+      };
+      function rr(x, y, w, h, r) {
+        ctx.beginPath();
+        ctx.roundRect(x, y, w, h, r);
+      }
+      function circle(x, y, r) {
+        ctx.beginPath();
+        ctx.arc(x, y, r, 0, Math.PI * 2);
+      }
+
+      // ---------- 白天和夜里 ----------
+      // DL：这一刻有多「白天」，0 是深夜，1 是白天。界面颜色、天空、名字、图标都跟着它
+      const DAY_KEYS = [
+        [0, 0],
+        [6.0, 0],
+        [7.8, 1],
+        [30.2, 1],
+        [32.8, 0],
+        [43.8, 0],
+        [46.2, 1],
+        [60, 1],
+      ];
+      function daylight(t) {
+        for (let i = 1; i < DAY_KEYS.length; i++) {
+          const [t0, v0] = DAY_KEYS[i - 1];
+          const [t1, v1] = DAY_KEYS[i];
+          if (t <= t1) return lerp(v0, v1, ease.smooth(seg(t, t0, t1)));
+        }
+        return 1;
+      }
+      let DL = 0;
+      // TH：界面用浅色还是深色（0 深、1 浅）。平时等于 DL；天亮天黑时窗口分两遍画，新的外观从太阳 / 月亮那里一圈圈扩开
+      let TH = 0;
+      // 界面的颜色，和 Nightshift 本身的浅色 / 深色一样
+      const UI = {
+        light: { paper: '#f3f3f1', sheet: '#fafaf9', raised: '#ffffff', ink: '#1c1c1a', ink2: '#3d3d3a', graphite: '#74736d', faint: '#9e9d97', rule: '#e4e4e0', selected: '#e9e9e6', bubble: '#efefec' },
+        dark: { paper: '#111111', sheet: '#151515', raised: '#1f1f1f', ink: '#e9e9e9', ink2: '#c8c9c6', graphite: '#898a87', faint: '#686865', rule: '#2a2a2a', selected: '#232323', bubble: '#262626' },
+      };
+      const tk = (name, a = 1) => css(mixRgb(UI.dark[name], UI.light[name], TH), a);
+      // 天空上的字：夜里是月光色，白天是深蓝
+      const skyInk = (a = 1) => css(mixRgb('#F3E9CF', '#1E2A47', DL), a);
+
+      const AG = {
+        Claude: { color: '#C2671A', role: '开发' },
+        GPT: { color: '#13897A', role: '审查' },
+        Gemini: { color: '#3F6AD8', role: '测试' },
+      };
+
+      // ---------- 天空 ----------
+      const STARS = (() => {
+        const r = rng(7);
+        return Array.from({ length: 140 }, () => ({ x: r() * W, y: r() * H * 0.92, s: 0.6 + r() * 1.8, ph: r() * 6.28, sp: 0.6 + r() * 1.6 }));
+      })();
+      function drawSky(t, dl = DL, starMask) {
+        const g = ctx.createLinearGradient(0, 0, 0, H);
+        g.addColorStop(0, css(mixRgb('#060A20', '#7DB8F0', dl)));
+        g.addColorStop(1, css(mixRgb('#1B2254', '#E6F2FF', dl)));
+        ctx.fillStyle = g;
+        ctx.fillRect(0, 0, W, H);
+        // 黄昏和清晨：地平线上一层暖光
+        const glow = 4 * dl * (1 - dl);
+        if (glow > 0.01) {
+          const gg = ctx.createLinearGradient(0, H, 0, H * 0.35);
+          gg.addColorStop(0, `rgba(255,170,110,${0.55 * glow})`);
+          gg.addColorStop(1, 'rgba(255,170,110,0)');
+          ctx.fillStyle = gg;
+          ctx.fillRect(0, 0, W, H);
+        }
+        const sa = 1 - dl;
+        if (sa > 0.01) {
+          for (const s of STARS) {
+            const a = sa * (0.3 + 0.7 * (0.5 + 0.5 * Math.sin(t * s.sp + s.ph))) * (starMask ? starMask(s.x) : 1);
+            if (a < 0.02) continue;
+            ctx.fillStyle = `rgba(243,233,207,${a})`;
+            circle(s.x, s.y, s.s);
+            ctx.fill();
+          }
+        }
+      }
+
+      // ---------- 图标（和 scripts/make-icon.js 同一个图案，坐标按 64×64 写） ----------
+      // o.moon：月亮长出来的程度；o.prompt：false 时不画提示符（开场时提示符单独画）
+      function moonIcon(cx, cy, size, alpha = 1, o = {}) {
+        if (alpha <= 0) return;
+        const k = size / 64;
+        ctx.save();
+        ctx.globalAlpha *= alpha;
+        ctx.translate(cx - 32 * k, cy - 32 * k);
+        ctx.scale(k, k);
+        if ((o.tile ?? 1) > 0) {
+          ctx.save();
+          ctx.globalAlpha *= o.tile ?? 1;
+          rr(2, 2, 60, 60, 14);
+          ctx.fillStyle = '#12183A';
+          ctx.fill();
+          ctx.restore();
+        }
+        const m = o.moon ?? 1;
+        if (m > 0) {
+          ctx.save();
+          // 一弯月亮：大圆减去右上方的圆
+          ctx.beginPath();
+          ctx.rect(0, 0, 64, 64);
+          ctx.arc(37, 27, 15 * m, 0, Math.PI * 2, true);
+          ctx.clip('evenodd');
+          circle(27, 34, 18 * m);
+          ctx.fillStyle = '#F3E9CF';
+          ctx.fill();
+          ctx.restore();
+        }
+        if (o.prompt !== false) promptMark(1);
+        const st = o.stars ?? 1;
+        if (st > 0) {
+          ctx.fillStyle = `rgba(243,233,207,${st})`;
+          circle(51, 13, 1.6 * st);
+          ctx.fill();
+          circle(56, 20, 1.2 * st);
+          ctx.fill();
+        }
+        ctx.restore();
+      }
+      // 月亮缺口里的 >_（在图标坐标里画）
+      function promptMark(alpha, cursorOn = true, color = '#FFB547', w = 3.6) {
+        ctx.save();
+        ctx.globalAlpha *= alpha;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = w;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.beginPath();
+        ctx.moveTo(35, 22);
+        ctx.lineTo(41, 27.5);
+        ctx.lineTo(35, 33);
+        if (cursorOn) {
+          ctx.moveTo(44, 33);
+          ctx.lineTo(50, 33);
+        }
+        ctx.stroke();
+        ctx.restore();
+      }
+      function sunIcon(cx, cy, size, alpha = 1) {
+        if (alpha <= 0) return;
+        const k = size / 64;
+        ctx.save();
+        ctx.globalAlpha *= alpha;
+        ctx.translate(cx - 32 * k, cy - 32 * k);
+        ctx.scale(k, k);
+        rr(2, 2, 60, 60, 14);
+        ctx.fillStyle = '#CFE6FF';
+        ctx.fill();
+        ctx.strokeStyle = '#FFB23A';
+        ctx.lineWidth = 3.4;
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        for (let i = 0; i < 8; i++) {
+          const a = (i * Math.PI) / 4;
+          ctx.moveTo(32 + 21 * Math.cos(a), 32 + 21 * Math.sin(a));
+          ctx.lineTo(32 + 25 * Math.cos(a), 32 + 25 * Math.sin(a));
+        }
+        ctx.stroke();
+        circle(32, 32, 16);
+        ctx.fillStyle = '#FFB23A';
+        ctx.fill();
+        ctx.strokeStyle = '#24304F';
+        ctx.lineWidth = 3.8;
+        ctx.lineJoin = 'round';
+        ctx.beginPath();
+        ctx.moveTo(23.5, 25);
+        ctx.lineTo(30.5, 31.5);
+        ctx.lineTo(23.5, 38);
+        ctx.moveTo(33.5, 38);
+        ctx.lineTo(40.5, 38);
+        ctx.stroke();
+        ctx.restore();
+      }
+      // 跟着 DL 换的图标：夜里是月亮，白天是太阳。换的时候像硬币一样翻过去（不叠在一起，免得发灰）
+      function brandIcon(cx, cy, size, alpha = 1) {
+        if (DL <= 0.001) return moonIcon(cx, cy, size, alpha);
+        if (DL >= 0.999) return sunIcon(cx, cy, size, alpha);
+        ctx.save();
+        ctx.translate(cx, cy);
+        ctx.scale(Math.max(0.02, Math.abs(Math.cos(Math.PI * DL))), 1);
+        ctx.translate(-cx, -cy);
+        if (DL < 0.5) moonIcon(cx, cy, size, alpha);
+        else sunIcon(cx, cy, size, alpha);
+        ctx.restore();
+      }
+      // 名字：Night 和 Day 上下换位，shift 跟着挪；reveal 是开场打字时露出几个字母
+      function wordmark(x, y, size, color, alpha = 1, reveal = 99, cursor = false) {
+        const f = font(600, size);
+        const wn = measure('Night', f);
+        const wd = measure('Day', f);
+        const pre = lerp(wn, wd, DL);
+        ctx.save();
+        ctx.globalAlpha *= alpha;
+        // Night 往上滑走、Day 从下面滑进来，只在字的那一条高度里看得见
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(x - 4, y - size * 0.82, Math.max(wn, wd) + 8, size * 1.08);
+        ctx.clip();
+        const nightText = 'Night'.slice(0, Math.max(0, reveal));
+        const base = ctx.globalAlpha;
+        if (DL < 1) {
+          ctx.globalAlpha = base * (1 - DL);
+          text(nightText, x, y - DL * size * 1.35, f, color);
+        }
+        if (DL > 0) {
+          ctx.globalAlpha = base * DL;
+          text('Day', x, y + (1 - DL) * size * 1.35, f, color);
+        }
+        ctx.restore();
+        const shift = 'shift'.slice(0, Math.max(0, reveal - 5));
+        text(shift, x + pre, y, f, color);
+        if (cursor) {
+          const shown = reveal >= 5 ? pre + measure(shift, f) : measure(nightText, f);
+          ctx.fillStyle = '#FFB547';
+          ctx.fillRect(x + shown + size * 0.06, y - size * 0.72, size * 0.08, size * 0.82);
+        }
+        ctx.restore();
+        return pre + measure('shift', f);
+      }
+
+      // ---------- 文字排版（中文一个字一块，英文单词、@成员 各是一整块） ----------
+      function tokens(str) {
+        const out = [];
+        for (const m of str.matchAll(/@(Claude|GPT|Gemini)|[A-Za-z0-9._\-\/]+|\s|./gu)) out.push(m[1] ? { s: m[0], tag: m[1] } : { s: m[0] });
+        return out;
+      }
+      const layoutCache = new Map();
+      function layout(str, maxW, size, weight = 400) {
+        const key = [str, maxW, size, weight].join('|');
+        if (layoutCache.has(key)) return layoutCache.get(key);
+        const lines = [];
+        let cur = { toks: [], w: 0 };
+        for (const tok of tokens(str)) {
+          const w = measure(tok.s, font(tok.tag ? 600 : weight, size)) + (tok.tag ? size * 0.5 : 0);
+          if (tok.s === ' ' && !cur.toks.length) continue;
+          if (cur.w + w > maxW && cur.toks.length) {
+            lines.push(cur);
+            cur = { toks: [], w: 0 };
+            if (tok.s === ' ') continue;
+          }
+          cur.toks.push({ ...tok, x: cur.w, w, n: [...tok.s].length });
+          cur.w += w;
+        }
+        if (cur.toks.length) lines.push(cur);
+        layoutCache.set(key, lines);
+        return lines;
+      }
+      // 画排好的文字；reveal 是露出多少个字（打字、流式输出）。返回最后一个字后面的位置（放光标）
+      function drawText(lines, x, y, size, lh, color, reveal = 1e9, weight = 400) {
+        let left = reveal;
+        let end = { x, y };
+        for (let li = 0; li < lines.length && left > 0; li++) {
+          const by = y + li * lh;
+          for (const tok of lines[li].toks) {
+            if (left <= 0) break;
+            const s = tok.n <= left ? tok.s : [...tok.s].slice(0, left).join('');
+            left -= tok.n;
+            if (tok.tag) {
+              const c = AG[tok.tag].color;
+              const f = font(600, size);
+              const tw = measure(s, f);
+              rr(x + tok.x + 1, by - size * 0.92, tw + size * 0.36, size * 1.24, 6);
+              ctx.fillStyle = css(c, 0.16);
+              ctx.fill();
+              text(s, x + tok.x + size * 0.18 + 1, by, f, c);
+              end = { x: x + tok.x + tw + size * 0.5, y: by };
+            } else {
+              text(s, x + tok.x, by, font(weight, size), color);
+              end = { x: x + tok.x + measure(s, font(weight, size)), y: by };
+            }
+          }
+        }
+        return end;
+      }
+      const chars = (s) => [...s].length;
+
+      // ---------- 小图标（工具行、文件卡片） ----------
+      function glyph(kind, x, y, s, color) {
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.scale(s / 16, s / 16);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.5;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.beginPath();
+        if (kind === 'edit') {
+          ctx.moveTo(3, 13);
+          ctx.lineTo(3.8, 9.8);
+          ctx.lineTo(10.8, 2.8);
+          ctx.lineTo(13.2, 5.2);
+          ctx.lineTo(6.2, 12.2);
+          ctx.closePath();
+        } else if (kind === 'run') {
+          ctx.rect(1.8, 2.5, 12.4, 11);
+          ctx.moveTo(4.6, 6.2);
+          ctx.lineTo(6.6, 8);
+          ctx.lineTo(4.6, 9.8);
+          ctx.moveTo(8.2, 10.2);
+          ctx.lineTo(11.4, 10.2);
+        } else if (kind === 'read') {
+          ctx.moveTo(4, 1.8);
+          ctx.lineTo(9.2, 1.8);
+          ctx.lineTo(12.5, 5);
+          ctx.lineTo(12.5, 14.2);
+          ctx.lineTo(4, 14.2);
+          ctx.closePath();
+          ctx.moveTo(6, 8.2);
+          ctx.lineTo(10.5, 8.2);
+          ctx.moveTo(6, 10.8);
+          ctx.lineTo(10.5, 10.8);
+        } else if (kind === 'check') {
+          ctx.moveTo(3.5, 8.5);
+          ctx.lineTo(6.5, 11.5);
+          ctx.lineTo(12.5, 4.5);
+        } else if (kind === 'folder') {
+          ctx.moveTo(1.8, 4.2);
+          ctx.lineTo(1.8, 12.4);
+          ctx.quadraticCurveTo(1.8, 13.6, 3, 13.6);
+          ctx.lineTo(13, 13.6);
+          ctx.quadraticCurveTo(14.2, 13.6, 14.2, 12.4);
+          ctx.lineTo(14.2, 5.8);
+          ctx.quadraticCurveTo(14.2, 4.6, 13, 4.6);
+          ctx.lineTo(7.7, 4.6);
+          ctx.lineTo(6.2, 3);
+          ctx.lineTo(3, 3);
+          ctx.quadraticCurveTo(1.8, 3, 1.8, 4.2);
+        } else if (kind === 'clock') {
+          ctx.arc(8, 8, 6, 0, Math.PI * 2);
+          ctx.moveTo(8, 4.8);
+          ctx.lineTo(8, 8.2);
+          ctx.lineTo(10.4, 9.6);
+        }
+        ctx.stroke();
+        ctx.restore();
+      }
+      function avatar(x, y, r, name, color) {
+        circle(x, y, r);
+        ctx.fillStyle = color;
+        ctx.fill();
+        text(name[0], x, y + r * 0.36, font(700, r * 1.05), '#fff', 'center');
+      }
+
+      // ---------- 对话内容 ----------
+      // 白天：你派活，Claude 写，GPT 挑错，Claude 修好再交给 Gemini
+      const DAY = [
+        { kind: 'user', t0: 10.9, text: '@Claude 做一个待办清单网页，做完交给 @GPT 审查' },
+        {
+          kind: 'agent',
+          who: 'Claude',
+          t0: 11.3,
+          tools: [
+            ['edit', '编辑', 'index.html'],
+            ['edit', '编辑', 'style.css'],
+            ['run', '运行', 'npm test'],
+          ],
+          text: '写好了：添加、勾选、删除都能用，刷新也不会丢。@GPT 请审查。',
+        },
+        { kind: 'agent', who: 'GPT', t0: 14.1, tools: [['read', '阅读', 'index.html']], text: '两个问题：空的也能添加；勾选状态没有保存。@Claude 修一下。' },
+        {
+          kind: 'agent',
+          who: 'Claude',
+          t0: 16.5,
+          tools: [
+            ['edit', '编辑', 'app.js'],
+            ['run', '运行', 'npm test'],
+          ],
+          text: '都修好了，补了 3 个测试。@Gemini 在浏览器里跑一遍。',
+        },
+      ];
+      // 夜里：快进，一行一条
+      const NIGHT_ROWS = [
+        ['Gemini', '打开 index.html，在三种屏幕上各截了一张图'],
+        ['Gemini', '手机上按钮太小，@Claude 改一下'],
+        ['Claude', '编辑 style.css，加大点击区域'],
+        ['Claude', '运行 npm test，21 个测试全部通过'],
+        ['GPT', '审查改动，没有问题'],
+        ['Claude', '加上深色模式和导出功能'],
+        ['Gemini', '复查所有页面，全部正常'],
+        ['GPT', '写好 README 和使用说明'],
+        ['Claude', '整理代码，准备交付'],
+      ];
+      const NIGHT = NIGHT_ROWS.map(([who, s], i) => ({ kind: 'row', who, t0: 34.0 + i * 0.95, text: s }));
+      const FINAL = {
+        kind: 'final',
+        who: 'Claude',
+        t0: 46.6,
+        text: '早上好！待办清单做好了：手机和电脑都能用，21 个测试全部通过。',
+        files: [
+          ['index.html', '网页'],
+          ['style.css', '样式表'],
+          ['app.test.js', '测试'],
+        ],
+      };
+      const MSGS = [...DAY, ...NIGHT, FINAL];
+      const COL = 820; // 对话那一栏的宽度
+      const GAP = 30;
+      function msgHeight(m) {
+        if (m.h) return m.h;
+        if (m.kind === 'user') m.h = layout(m.text, 520, 24).length * 38 + 34;
+        else if (m.kind === 'row') m.h = 50;
+        else {
+          const lines = layout(m.text, COL, 24).length;
+          m.h = 44 + (m.tools ? m.tools.length * 36 + 6 : 0) + lines * 38 + (m.files ? 104 + 46 : 0);
+        }
+        return m.h;
+      }
+      // 一条消息的时间线：工具一行行出来，然后文字流式输出
+      const toolsAt = (m, i) => m.t0 + 0.35 + i * 0.42;
+      const textAt = (m) => (m.tools ? toolsAt(m, m.tools.length) : m.t0 + 0.35);
+      const textDur = (m) => Math.min(2.2, chars(m.text) * 0.045);
+      const doneAt = (m) => (m.kind === 'user' || m.kind === 'row' ? m.t0 + 0.3 : textAt(m) + textDur(m));
+
+      function drawMessage(m, t, x, y) {
+        const lt = t - m.t0;
+        const a = ease.out(seg(lt, 0, 0.35));
+        ctx.save();
+        ctx.globalAlpha *= a;
+        y += (1 - a) * 14;
+        if (m.kind === 'user') {
+          const lines = layout(m.text, 520, 24);
+          const bw = Math.max(...lines.map((l) => l.w)) + 44;
+          const bx = x + COL - bw;
+          rr(bx, y, bw, msgHeight(m), 22);
+          ctx.fillStyle = tk('bubble');
+          ctx.fill();
+          drawText(lines, bx + 22, y + 43, 24, 38, tk('ink'));
+        } else if (m.kind === 'row') {
+          const c = AG[m.who].color;
+          avatar(x + 16, y + 22, 15, m.who, c);
+          text(m.who, x + 44, y + 30, font(600, 22), c);
+          const nx = x + 44 + measure(m.who, font(600, 22)) + 14;
+          drawText(layout(m.text, COL - 200, 22), nx, y + 30, 22, 30, tk('ink2'));
+          text(clockText(m.t0), x + COL, y + 30, font(400, 19, MONO), tk('faint'), 'right');
+        } else {
+          const c = AG[m.who].color;
+          avatar(x + 17, y + 17, 17, m.who, c);
+          text(m.who, x + 46, y + 26, font(600, 24), c);
+          text(AG[m.who].role, x + 46 + measure(m.who, font(600, 24)) + 10, y + 26, font(400, 20), tk('graphite'));
+          let yy = y + 44;
+          if (m.tools) {
+            m.tools.forEach(([kind, verb, target], i) => {
+              const ta = ease.out(seg(t, toolsAt(m, i), toolsAt(m, i) + 0.25));
+              if (ta <= 0) return;
+              ctx.save();
+              ctx.globalAlpha *= ta;
+              glyph(kind, x + 2, yy + 7, 20, tk('graphite'));
+              text(verb, x + 32, yy + 23, font(400, 20), tk('graphite'));
+              text(target, x + 32 + measure(verb, font(400, 20)) + 10, yy + 23, font(400, 20, MONO), tk('ink2'));
+              ctx.restore();
+              yy += 36;
+            });
+            yy += 6;
+          }
+          const lines = layout(m.text, COL, 24);
+          const shown = Math.floor(chars(m.text) * seg(t, textAt(m), textAt(m) + textDur(m)));
+          if (shown > 0) drawText(lines, x, yy + 28, 24, 38, tk('ink'), shown);
+          yy += lines.length * 38;
+          if (m.files) {
+            const fa = textAt(m) + textDur(m) + 0.15;
+            m.files.forEach(([name, type], i) => {
+              const k = ease.back(seg(t, fa + i * 0.18, fa + i * 0.18 + 0.4));
+              if (k <= 0) return;
+              const cx = x + i * 270;
+              ctx.save();
+              ctx.globalAlpha *= clamp(k);
+              ctx.translate(cx + 125, yy + 52);
+              ctx.scale(lerp(0.85, 1, k), lerp(0.85, 1, k));
+              rr(-125, -40, 250, 80, 14);
+              ctx.fillStyle = tk('raised');
+              ctx.fill();
+              ctx.strokeStyle = tk('rule');
+              ctx.lineWidth = 1.5;
+              ctx.stroke();
+              rr(-109, -24, 48, 48, 10);
+              ctx.fillStyle = css(['#3F6AD8', '#B0357A', '#2F8A3B'][i], 0.16);
+              ctx.fill();
+              glyph(i === 2 ? 'check' : 'read', -97, -12, 24, ['#3F6AD8', '#B0357A', '#2F8A3B'][i]);
+              text(name, -47, -4, font(600, 21), tk('ink'));
+              text(type, -47, 22, font(400, 18), tk('graphite'));
+              ctx.restore();
+            });
+            yy += 104;
+            const sa = ease.out(seg(t, fa + 0.9, fa + 1.3));
+            if (sa > 0) {
+              ctx.save();
+              ctx.globalAlpha *= sa;
+              let sx = x;
+              for (const [kind, s] of [
+                ['edit', '改了 12 个文件'],
+                ['run', '运行 38 条命令'],
+                ['clock', '用时 7 小时 42 分'],
+              ]) {
+                glyph(kind, sx, yy + 12, 20, tk('graphite'));
+                text(s, sx + 28, yy + 29, font(400, 20), tk('graphite'));
+                sx += 28 + measure(s, font(400, 20)) + 34;
+              }
+              ctx.restore();
+            }
+          }
+        }
+        ctx.restore();
+      }
+
+      // 夜里的时钟：23:00 走到 06:42
+      function clockText(t) {
+        const m = (23 * 60 + Math.round(462 * ease.inOut(seg(t, 33.2, 43.6)))) % 1440;
+        return String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0');
+      }
+
+      // ---------- 窗口 ----------
+      const WIN = { w: 1500, h: 820 };
+      const RAIL = 290;
+      const TB = 56;
+      const FOLDER = { x: 960, y: 610 };
+      function winState(t) {
+        const base = { cx: 210 + WIN.w / 2, cy: 228 + WIN.h / 2, scale: 1, alpha: 1 };
+        if (t < 7.5 || t > 53.4) return null;
+        if (t < 8.9) {
+          const k = ease.out(seg(t, 7.5, 8.9));
+          return { ...base, cy: lerp(H + WIN.h / 2 + 40, base.cy, k), alpha: clamp(k * 1.6) };
+        }
+        if (t >= 19.6 && t < 32.4) {
+          // 收进项目文件夹，再从文件夹里放大回来
+          const k = t < 26 ? ease.inOut(seg(t, 19.6, 21.0)) : 1 - ease.inOut(seg(t, 30.9, 32.3));
+          if (k >= 0.999) return null;
+          return { cx: lerp(base.cx, FOLDER.x, k), cy: lerp(base.cy, FOLDER.y, k), scale: lerp(1, 0.1, k), alpha: 1 - ease.smooth(seg(k, 0.55, 1)) };
+        }
+        if (t > 52.0) {
+          const k = ease.inOut(seg(t, 52.0, 53.4));
+          return { ...base, cy: lerp(base.cy, H + WIN.h / 2 + 60, k), alpha: 1 - k };
+        }
+        return base;
+      }
+
+      // 天亮 / 天黑时：先用原来的外观画整个窗口，再把新外观画在一个从右上角太阳（月亮）扩开的圆里
+      function drawWindowThemed(t, ws) {
+        // 窗口正在从文件夹里放大的时候直接换，不画扩散的圆（小窗口上只会看到一块黑角）
+        if (DL <= 0.001 || DL >= 0.999 || ws.scale < 0.98) {
+          TH = DL < 0.5 ? 0 : 1;
+          drawWindow(t, ws);
+          TH = DL;
+          return;
+        }
+        const rising = daylight(t + 0.05) >= daylight(t - 0.05);
+        const q = ease.inOut(rising ? DL : 1 - DL);
+        TH = rising ? 0 : 1;
+        drawWindow(t, ws);
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(1752, 116, q * 1900, 0, Math.PI * 2);
+        ctx.clip();
+        TH = rising ? 1 : 0;
+        drawWindow(t, ws);
+        ctx.restore();
+        TH = DL;
+      }
+
+      function drawWindow(t, ws) {
+        ctx.save();
+        ctx.globalAlpha *= ws.alpha;
+        ctx.translate(ws.cx, ws.cy);
+        ctx.scale(ws.scale, ws.scale);
+        ctx.translate(-WIN.w / 2, -WIN.h / 2);
+        ctx.save();
+        ctx.shadowColor = 'rgba(8,10,30,0.35)';
+        ctx.shadowBlur = 70;
+        ctx.shadowOffsetY = 24;
+        rr(0, 0, WIN.w, WIN.h, 18);
+        ctx.fillStyle = tk('sheet');
+        ctx.fill();
+        ctx.restore();
+        ctx.save();
+        rr(0, 0, WIN.w, WIN.h, 18);
+        ctx.clip();
+        ctx.fillStyle = tk('paper');
+        ctx.fillRect(0, 0, RAIL, WIN.h);
+        drawTitlebar(t);
+        drawRail(t);
+        drawChat(t);
+        ctx.restore();
+        rr(0.5, 0.5, WIN.w - 1, WIN.h - 1, 18);
+        ctx.strokeStyle = tk('rule');
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      function drawTitlebar(t) {
+        const ink2 = tk('ink2');
+        // 左边：菜单、侧边栏、后退、前进
+        ctx.strokeStyle = ink2;
+        ctx.lineWidth = 2;
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        for (const yy of [21, 28, 35]) {
+          ctx.moveTo(22, yy);
+          ctx.lineTo(40, yy);
+        }
+        ctx.stroke();
+        rr(62, 19, 20, 18, 4);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(69, 19);
+        ctx.lineTo(69, 37);
+        ctx.moveTo(116, 28);
+        ctx.lineTo(102, 28);
+        ctx.moveTo(108, 22);
+        ctx.lineTo(102, 28);
+        ctx.lineTo(108, 34);
+        ctx.stroke();
+        // 中间：项目 / 会话名，后面是成员
+        const tx = RAIL + 24;
+        text('todo-app', tx, 36, font(400, 20), tk('graphite'));
+        const w1 = measure('todo-app', font(400, 20));
+        text('/', tx + w1 + 10, 36, font(400, 20), tk('faint'));
+        text('做一个待办清单网页', tx + w1 + 30, 36, font(600, 20), tk('ink'));
+        const w2 = measure('做一个待办清单网页', font(600, 20));
+        const mx = tx + w1 + 30 + w2 + 26;
+        rr(mx, 13, 150, 32, 16);
+        ctx.strokeStyle = tk('rule');
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        ['Claude', 'GPT', 'Gemini'].forEach((n, i) => {
+          circle(mx + 20 + i * 15, 29, 11);
+          ctx.fillStyle = tk('sheet');
+          ctx.fill();
+          avatar(mx + 20 + i * 15, 29, 9.5, n, AG[n].color);
+        });
+        text('3 位成员', mx + 74, 35, font(400, 16), tk('graphite'));
+        // 右边：系统的窗口按钮
+        ctx.strokeStyle = ink2;
+        ctx.lineWidth = 1.6;
+        ctx.beginPath();
+        ctx.moveTo(WIN.w - 150, 29);
+        ctx.lineTo(WIN.w - 136, 29);
+        ctx.rect(WIN.w - 100, 22, 13, 13);
+        ctx.moveTo(WIN.w - 52, 22);
+        ctx.lineTo(WIN.w - 39, 35);
+        ctx.moveTo(WIN.w - 39, 22);
+        ctx.lineTo(WIN.w - 52, 35);
+        ctx.stroke();
+      }
+
+      function drawRail(t) {
+        rr(16, TB + 8, RAIL - 32, 42, 12);
+        ctx.fillStyle = tk('raised');
+        ctx.fill();
+        ctx.strokeStyle = tk('rule');
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        text('搜索项目和会话', 52, TB + 36, font(400, 18), tk('faint'));
+        ctx.beginPath();
+        ctx.arc(36, TB + 28, 6, 0, Math.PI * 2);
+        ctx.moveTo(40.5, TB + 32.5);
+        ctx.lineTo(45, TB + 37);
+        ctx.strokeStyle = tk('faint');
+        ctx.stroke();
+        text('+  新建项目', 28, TB + 92, font(400, 19), tk('ink2'));
+        text('项目', 28, TB + 140, font(400, 16), tk('graphite'));
+        const rows = [
+          ['proj', 'todo-app', true],
+          ['chat', '做一个待办清单网页', '刚刚', true],
+          ['chat', '整理 README', '2 天前'],
+          ['chat', '修移动端布局', '5 天前'],
+          ['proj', 'blog', false],
+          ['proj', 'dotfiles', false],
+        ];
+        let y = TB + 156;
+        for (const r of rows) {
+          if (r[0] === 'proj') {
+            glyph('folder', 40, y + 8, 18, tk('faint'));
+            // 展开是向下的箭头，收起是向右的
+            ctx.strokeStyle = tk('faint');
+            ctx.lineWidth = 1.8;
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+            ctx.beginPath();
+            if (r[2]) {
+              ctx.moveTo(21, y + 14);
+              ctx.lineTo(25, y + 18);
+              ctx.lineTo(29, y + 14);
+            } else {
+              ctx.moveTo(23, y + 12);
+              ctx.lineTo(27, y + 16);
+              ctx.lineTo(23, y + 20);
+            }
+            ctx.stroke();
+            text(r[1], 66, y + 23, font(600, 18), tk('ink2'));
+            y += 40;
+          } else {
+            if (r[3]) {
+              rr(14, y, RAIL - 28, 36, 10);
+              ctx.fillStyle = tk('selected');
+              ctx.fill();
+            }
+            text(r[1], 46, y + 24, font(400, 18), r[3] ? tk('ink') : tk('ink2'));
+            text(r[2], RAIL - 30, y + 24, font(400, 14), tk('faint'), 'right');
+            y += 38;
+          }
+        }
+        // 底部：你的头像和名字，右边三个小点是装好的 AI 工具
+        ctx.fillStyle = tk('rule');
+        ctx.fillRect(0, WIN.h - 62, RAIL, 1);
+        avatar(36, WIN.h - 31, 14, 'Lau', '#2B7BB9');
+        text('Lau', 60, WIN.h - 25, font(500, 18), tk('ink'));
+        for (let i = 0; i < 3; i++) {
+          circle(RAIL - 66 + i * 14, WIN.h - 31, 4.5);
+          ctx.fillStyle = '#3BA55C';
+          ctx.fill();
+        }
+      }
+
+      function drawChat(t) {
+        const x0 = RAIL + (WIN.w - RAIL - COL) / 2;
+        const top = TB + 14;
+        const composerY = WIN.h - 24 - 112;
+        const bottom = composerY - 58;
+        const viewH = bottom - top;
+        // 已经出现的消息一条条往下排；新消息出现时内容慢慢长高，超出就往上滚
+        const shown = MSGS.filter((m) => t >= m.t0);
+        let total = 20;
+        const ys = [];
+        for (const m of shown) {
+          ys.push(total);
+          total += (msgHeight(m) + GAP) * ease.out(seg(t, m.t0, m.t0 + 0.45));
+        }
+        const scroll = Math.max(0, total - viewH);
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(RAIL, top, WIN.w - RAIL, viewH);
+        ctx.clip();
+        shown.forEach((m, i) => {
+          const y = top + ys[i] - scroll;
+          if (y > bottom || y + msgHeight(m) < top - 40) return;
+          drawMessage(m, t, x0, y);
+        });
+        // 上下边缘淡出
+        for (const [y, dir] of [
+          [top, 1],
+          [bottom, -1],
+        ]) {
+          const g = ctx.createLinearGradient(0, y, 0, y + dir * 40);
+          g.addColorStop(0, tk('sheet'));
+          g.addColorStop(1, tk('sheet', 0));
+          ctx.fillStyle = g;
+          ctx.fillRect(RAIL, Math.min(y, y + dir * 40), WIN.w - RAIL, 40);
+        }
+        ctx.restore();
+        drawTimeline(t, x0 - 70, top, viewH, shown.length);
+        drawRelay(t, x0, composerY - 44);
+        drawComposer(t, x0, composerY);
+      }
+
+      // 对话轴：左边一排刻度，每一轮一道，最新的一道最长最亮
+      function drawTimeline(t, x, top, viewH, n) {
+        if (n < 3) return;
+        const count = Math.min(n, 24);
+        const step = 13;
+        const y0 = top + viewH / 2 - (count * step) / 2;
+        for (let i = 0; i < count; i++) {
+          const last = i === count - 1;
+          ctx.fillStyle = last ? tk('ink') : tk('faint', 0.8);
+          ctx.fillRect(x + (last ? 0 : 6), y0 + i * step, last ? 26 : 14, 2.5);
+        }
+      }
+
+      // 接力条：做完的是实心点，正在做的在闪，排队的是空心点
+      const RELAY = [
+        ['你', 10.9, 10.9, null],
+        ['Claude', 11.0, 14.0, 'Claude'],
+        ['GPT', 11.0, 16.5, 'GPT'],
+        ['Claude', 15.9, 19.4, 'Claude'],
+        ['Gemini', 18.6, 34.0, 'Gemini'],
+        ...NIGHT.map((m, i) => [m.who, m.t0 - 0.5, m.t0 + 0.95, m.who]),
+        ['Claude', 46.1, 49.0, 'Claude'],
+      ];
+      function drawRelay(t, x, y) {
+        if (t < 10.9) return;
+        const items = RELAY.filter((r) => t >= r[1]);
+        const hidden = Math.max(0, items.length - 5);
+        const vis = items.slice(-5);
+        let cx = x;
+        text('接力', cx, y + 22, font(400, 17), tk('faint'));
+        cx += 52;
+        if (hidden) {
+          const s = `前面还有 ${hidden} 站`;
+          text(s, cx, y + 22, font(400, 16), tk('faint'));
+          cx += measure(s, font(400, 16)) + 18;
+        }
+        vis.forEach((r, i) => {
+          const [name, ta, done, agent] = r;
+          const c = agent ? AG[agent].color : tk('ink');
+          const state = t >= done ? 'done' : items.indexOf(r) === items.findIndex((x) => t < x[2]) ? 'work' : 'queue';
+          const a = ease.out(seg(t, ta, ta + 0.3));
+          ctx.save();
+          ctx.globalAlpha *= a;
+          if (i > 0) {
+            ctx.strokeStyle = state === 'queue' ? tk('rule') : c;
+            ctx.lineWidth = 2;
+            ctx.setLineDash(state === 'work' ? [6, 5] : []);
+            ctx.lineDashOffset = -t * 30;
+            ctx.beginPath();
+            ctx.moveTo(cx - 6, y + 16);
+            ctx.lineTo(cx + 22, y + 16);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            cx += 32;
+          }
+          circle(cx + 6, y + 16, 6);
+          if (state === 'queue') {
+            ctx.strokeStyle = c;
+            ctx.lineWidth = 2;
+            ctx.stroke();
+          } else {
+            ctx.fillStyle = c;
+            ctx.globalAlpha *= state === 'work' ? 0.55 + 0.45 * Math.sin(t * 7) : 1;
+            ctx.fill();
+          }
+          ctx.restore();
+          ctx.save();
+          ctx.globalAlpha *= a;
+          text(name, cx + 18, y + 22, font(state === 'work' ? 600 : 400, 17), state === 'work' ? tk('ink') : tk('graphite'));
+          ctx.restore();
+          cx += 18 + measure(name, font(600, 17)) + 14;
+        });
+      }
+
+      // 输入框：开场打字，按发送以后清空
+      const PROMPT_TEXT = DAY[0].text;
+      function drawComposer(t, x, y) {
+        rr(x, y, COL, 112, 22);
+        ctx.fillStyle = tk('raised');
+        ctx.fill();
+        ctx.strokeStyle = tk('rule');
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        const typing = t >= 9.0 && t < 10.9;
+        const n = Math.floor(chars(PROMPT_TEXT) * seg(t, 9.0, 10.5));
+        if (typing && n > 0) {
+          const end = drawText(layout(PROMPT_TEXT, COL - 48, 22), x + 24, y + 40, 22, 32, tk('ink'), n);
+          if (Math.floor(t * 3) % 2 === 0 || t < 10.5) {
+            ctx.fillStyle = tk('ink');
+            ctx.fillRect(end.x + 2, end.y - 20, 2, 26);
+          }
+        } else {
+          text('给团队发消息，用 @ 指定成员，/ 选择技能', x + 24, y + 40, font(400, 20), tk('faint'));
+        }
+        text('@', x + 24, y + 92, font(400, 20), tk('graphite'));
+        text('/', x + 62, y + 92, font(400, 20), tk('graphite'));
+        // 右下：发给谁、发送按钮（打了字是深色）
+        avatar(x + COL - 160, y + 85, 11, 'Claude', AG.Claude.color);
+        text('Claude', x + COL - 142, y + 92, font(500, 18), tk('ink2'));
+        const active = typing && n > 0;
+        const flash = 1 - seg(t, 10.85, 11.2);
+        circle(x + COL - 34, y + 84, 18);
+        ctx.fillStyle = active || (t > 10.85 && flash > 0) ? tk('ink') : tk('selected');
+        ctx.fill();
+        ctx.strokeStyle = active || (t > 10.85 && flash > 0) ? tk('sheet') : tk('faint');
+        ctx.lineWidth = 2.4;
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(x + COL - 34, y + 93);
+        ctx.lineTo(x + COL - 34, y + 76);
+        ctx.moveTo(x + COL - 41, y + 82);
+        ctx.lineTo(x + COL - 34, y + 75);
+        ctx.lineTo(x + COL - 27, y + 82);
+        ctx.stroke();
+      }
+
+      // ---------- 第三幕：八种 AI 围着项目文件夹 ----------
+      const CREW = [
+        ['$ claude', 'Claude Code', '#C2671A'],
+        ['$ codex', 'Codex', '#13897A'],
+        ['$ gemini', 'Gemini CLI', '#3F6AD8'],
+        ['$ opencode', 'OpenCode', '#5B47C7'],
+        ['$ grok', 'Grok Build', '#9A3412'],
+        ['$ pi', 'pi', '#2F8A3B'],
+        ['$ hermes', 'Hermes Agent', '#B0357A'],
+        ['API', 'DeepSeek、Kimi、通义千问', '#0E7490'],
+      ];
+      const crewPos = (i) => {
+        const a = -Math.PI / 2 + (i * Math.PI * 2) / CREW.length;
+        return { x: FOLDER.x + Math.cos(a) * 640, y: FOLDER.y + 20 + Math.sin(a) * 290 };
+      };
+      function drawCrew(t) {
+        if (t < 20.2 || t > 31.2) return;
+        const out = ease.inOut(seg(t, 29.6, 30.8)); // 最后收回文件夹
+        const fa = window01(t, 20.3, 31.0, 0.5);
+        // 中间的项目文件夹
+        ctx.save();
+        ctx.globalAlpha *= fa;
+        const fs = lerp(0.6, 1, ease.back(seg(t, 20.3, 21.0)));
+        ctx.translate(FOLDER.x, FOLDER.y);
+        ctx.scale(fs, fs);
+        rr(-120, -88, 110, 40, 14);
+        ctx.fillStyle = css(mixRgb('#5A4A86', '#F2B544', DL));
+        ctx.fill();
+        rr(-120, -64, 240, 150, 18);
+        ctx.fill();
+        rr(-120, -46, 240, 132, 18);
+        ctx.fillStyle = css(mixRgb('#7A68B0', '#FFCB66', DL));
+        ctx.fill();
+        text('todo-app/', 0, 140, font(500, 32, MONO), skyInk(), 'center');
+        ctx.restore();
+        CREW.forEach(([cmd, name, color], i) => {
+          const p = crewPos(i);
+          const k = ease.back(seg(t, 20.9 + i * 0.12, 21.6 + i * 0.12)) * (1 - out);
+          if (k <= 0.001) return;
+          const cx = lerp(FOLDER.x, p.x, k);
+          const cy = lerp(FOLDER.y, p.y, k);
+          // 连到文件夹的线，线上跑着交接的小光点
+          const la = ease.out(seg(t, 22.0 + i * 0.1, 22.6 + i * 0.1)) * (1 - out);
+          if (la > 0) {
+            const ex = lerp(cx, FOLDER.x, la * 0.82);
+            const ey = lerp(cy, FOLDER.y, la * 0.82);
+            ctx.strokeStyle = css(color, 0.55);
+            ctx.lineWidth = 3;
+            ctx.lineCap = 'round';
+            ctx.beginPath();
+            ctx.moveTo(cx, cy);
+            ctx.lineTo(ex, ey);
+            ctx.stroke();
+            if (t > 23 && t < 29.6) {
+              const ph = ((t - 23) * 0.55 + i * 0.37) % 1;
+              const dx = lerp(cx, FOLDER.x, ph * 0.82);
+              const dy = lerp(cy, FOLDER.y, ph * 0.82);
+              circle(dx, dy, 6);
+              ctx.fillStyle = color;
+              ctx.fill();
+            }
+          }
+          ctx.save();
+          ctx.globalAlpha *= clamp(k);
+          ctx.translate(cx, cy);
+          ctx.scale(lerp(0.5, 1, clamp(k)), lerp(0.5, 1, clamp(k)));
+          ctx.save();
+          ctx.shadowColor = 'rgba(10,20,50,0.18)';
+          ctx.shadowBlur = 30;
+          ctx.shadowOffsetY = 10;
+          rr(-150, -46, 300, 92, 18);
+          ctx.fillStyle = tk('raised');
+          ctx.fill();
+          ctx.restore();
+          circle(-122, -14, 7);
+          ctx.fillStyle = color;
+          ctx.fill();
+          text(cmd, -104, -5, font(500, 26, MONO), tk('ink'));
+          if (Math.floor(t * 2.5 + i) % 2 === 0) {
+            ctx.fillStyle = color;
+            ctx.fillRect(-104 + measure(cmd, font(500, 26, MONO)) + 6, -24, 12, 24);
+          }
+          text(name, -130, 30, font(400, 20), tk('graphite'));
+          ctx.restore();
+        });
+      }
+
+      // ---------- 天上：右上角的太阳和月亮，标题，时钟 ----------
+      function drawCelestial(t) {
+        if (t < 5.5 || t > 52.4) return;
+        const a = window01(t, 5.5, 52.4, 0.8);
+        const x = 1752;
+        const y = 116;
+        ctx.save();
+        ctx.globalAlpha *= a;
+        // 太阳：白天升起来，傍晚落下去（落到窗口后面）
+        if (DL > 0.01) {
+          const sy = y + (1 - DL) * 190;
+          ctx.globalAlpha = a * DL;
+          ctx.strokeStyle = '#FFB23A';
+          ctx.lineWidth = 6;
+          ctx.lineCap = 'round';
+          ctx.beginPath();
+          for (let i = 0; i < 8; i++) {
+            const an = (i * Math.PI) / 4 + t * 0.15;
+            ctx.moveTo(x + 56 * Math.cos(an), sy + 56 * Math.sin(an));
+            ctx.lineTo(x + 70 * Math.cos(an), sy + 70 * Math.sin(an));
+          }
+          ctx.stroke();
+          circle(x, sy, 42);
+          ctx.fillStyle = '#FFB23A';
+          ctx.fill();
+        }
+        if (DL < 0.99) {
+          const my = y + DL * 190;
+          ctx.globalAlpha = a * (1 - DL);
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(x - 80, my - 80, 160, 160);
+          ctx.arc(x + 18, my - 14, 34, 0, Math.PI * 2, true);
+          ctx.clip('evenodd');
+          circle(x, my, 42);
+          ctx.fillStyle = '#F3E9CF';
+          ctx.fill();
+          ctx.restore();
+        }
+        ctx.restore();
+      }
+
+      const CAPTIONS = [
+        [8.9, 13.7, '用 @ 点名，AI 之间自己交接', 'Mention an agent with @. They hand the work to each other.'],
+        [13.9, 19.6, '出了问题，它们会互相指出来', 'When something is off, they point it out to each other.'],
+        [21.0, 29.5, '每一位都是真正的编程 AI，共用一个项目文件夹', 'Real coding agents, sharing one project folder.'],
+        [33.4, 43.4, '你去睡觉，它们值夜班', 'You go to sleep. They take the night shift.'],
+        [46.6, 51.9, '醒来，活已经干完了', 'Wake up to finished work.'],
+      ];
+      function drawCaptions(t) {
+        for (const [a, b, zh, en] of CAPTIONS) {
+          const k = window01(t, a, b, 0.45);
+          if (k <= 0) continue;
+          ctx.save();
+          ctx.globalAlpha *= k;
+          const dy = (1 - k) * 12;
+          text(zh, W / 2, 118 + dy, font(700, 54), skyInk(), 'center');
+          text(en, W / 2, 168 + dy, font(400, 26), skyInk(0.68), 'center');
+          ctx.restore();
+        }
+        // 夜里的时钟
+        const ca = window01(t, 33.2, 44.4, 0.6);
+        if (ca > 0) {
+          ctx.save();
+          ctx.globalAlpha *= ca;
+          text(clockText(t), 1640, 138, font(400, 56, MONO), skyInk(0.92), 'right');
+          ctx.restore();
+        }
+      }
+
+      // ---------- 开场和品牌角标 ----------
+      // 开场：光标在闪 → 月亮绕过来拼成图标 → 打出 Nightshift → 一句话；然后整个标志缩到左上角
+      function drawLockup(t) {
+        if (t > 52.6) return;
+        const textSize0 = 132;
+        const iconSize0 = 250;
+        // 居中时的位置
+        const f0 = font(600, textSize0);
+        const wordW = lerp(measure('Night', f0), measure('Day', f0), DL) + measure('shift', f0);
+        const total = iconSize0 + 44 + wordW;
+        const lx = W / 2 - total / 2;
+        const cy0 = 450;
+        // 移到左上角
+        const corner = ease.inOut(seg(t, 7.0, 8.2));
+        const iconSize = lerp(iconSize0, 52, corner);
+        const iconX = lerp(lx + iconSize0 / 2, 92, corner);
+        const iconY = lerp(cy0, 94, corner);
+        const textSize = lerp(textSize0, 34, corner);
+        const textX = lerp(lx + iconSize0 + 44, 130, corner);
+        const textY = lerp(cy0 + textSize0 * 0.36, 94 + 34 * 0.36, corner);
+        const fadeEnd = 1 - ease.smooth(seg(t, 52.0, 52.6));
+
+        // 0–3.2：图标拼起来（这时候在正中间）
+        const assemble = t < 3.9;
+        if (assemble) {
+          const shiftK = ease.inOut(seg(t, 3.2, 3.9));
+          const S = lerp(300, iconSize0, shiftK);
+          const cx = lerp(W / 2, lx + iconSize0 / 2, shiftK);
+          const tile = ease.out(seg(t, 2.0, 2.8));
+          const moon = ease.back(seg(t, 2.3, 3.1));
+          const stars = ease.back(seg(t, 2.9, 3.2));
+          ctx.save();
+          ctx.globalAlpha *= 1;
+          const ts = lerp(0.86, 1, tile);
+          moonIcon(cx, cy0, S * ts, tile, { prompt: false, stars: 0, moon: 0 });
+          moonIcon(cx, cy0, S, tile > 0 ? 1 : 0, { prompt: false, tile: 0, moon, stars });
+          ctx.restore();
+          // 提示符：先在正中间大大地闪，再滑进月亮的缺口
+          const k = S / 64;
+          const pk = ease.inOut(seg(t, 2.0, 3.0));
+          const scale = lerp(9.5, k, pk);
+          const pcx = lerp(W / 2, cx + (42.5 - 32) * k, pk);
+          const pcy = lerp(cy0, cy0 + (27.5 - 32) * k, pk);
+          const pa = ease.out(seg(t, 0.5, 1.0));
+          const blinkOn = t > 2.0 || Math.floor((t - 0.5) * 2.6) % 2 === 0;
+          ctx.save();
+          ctx.translate(pcx, pcy);
+          ctx.scale(scale, scale);
+          ctx.translate(-42.5, -27.5);
+          promptMark(pa, blinkOn);
+          ctx.restore();
+        } else {
+          brandIcon(iconX, iconY, iconSize, fadeEnd);
+        }
+        // 名字：3.4–4.6 一个字母一个字母打出来，后面跟着光标
+        if (t >= 3.4) {
+          const reveal = Math.floor(10 * seg(t, 3.4, 4.5)) + (t >= 4.5 ? 99 : 0);
+          const cursor = t < 6.0 && Math.floor(t * 2.6) % 2 === 0;
+          wordmark(textX, textY, textSize, skyInk(), fadeEnd, reveal, cursor);
+        }
+        // 一句话
+        const sa = window01(t, 4.6, 6.6, 0.5);
+        if (sa > 0) {
+          ctx.save();
+          ctx.globalAlpha *= sa;
+          text('一群 AI，一个项目，一场接力', W / 2, 666, font(500, 46), skyInk(0.95), 'center');
+          text('A crew of AIs. One project. One relay.', W / 2, 722, font(400, 27), skyInk(0.62), 'center');
+          ctx.restore();
+        }
+      }
+
+      // ---------- 结尾 ----------
+      let dayLayer = null;
+      function drawEnd(t) {
+        const k = ease.inOut(seg(t, 52.4, 53.6));
+        if (k <= 0) return;
+        // 左边夜里、右边白天，中间一道慢慢移动的晨昏线
+        const edge = lerp(900, 1020, seg(t, 52.4, 60));
+        if (!dayLayer) {
+          dayLayer = document.createElement('canvas');
+          dayLayer.width = W;
+          dayLayer.height = H;
+        }
+        const dctx = dayLayer.getContext('2d');
+        dctx.globalCompositeOperation = 'source-over';
+        const g = dctx.createLinearGradient(0, 0, 0, H);
+        g.addColorStop(0, '#7DB8F0');
+        g.addColorStop(1, '#E6F2FF');
+        dctx.fillStyle = g;
+        dctx.fillRect(0, 0, W, H);
+        dctx.globalCompositeOperation = 'destination-in';
+        const m = dctx.createLinearGradient(edge - 170, 0, edge + 170, 0);
+        m.addColorStop(0, 'rgba(0,0,0,0)');
+        m.addColorStop(1, 'rgba(0,0,0,1)');
+        dctx.fillStyle = m;
+        dctx.fillRect(0, 0, W, H);
+        ctx.save();
+        ctx.globalAlpha *= k;
+        drawSky(t, 0, (x) => 1 - clamp((x - (edge - 170)) / 340));
+        ctx.drawImage(dayLayer, 0, 0);
+        // 晨昏线上一道暖光
+        const dawn = ctx.createLinearGradient(edge - 140, 0, edge + 140, 0);
+        dawn.addColorStop(0, 'rgba(255,176,110,0)');
+        dawn.addColorStop(0.5, 'rgba(255,176,110,0.28)');
+        dawn.addColorStop(1, 'rgba(255,176,110,0)');
+        ctx.fillStyle = dawn;
+        ctx.fillRect(edge - 140, 0, 280, H);
+        ctx.restore();
+
+        const pop = (a) => ease.back(seg(t, a, a + 0.6));
+        const mk = pop(53.1);
+        const sk = pop(53.35);
+        moonIcon(700, 420, 240 * lerp(0.7, 1, clamp(mk)), clamp(mk));
+        sunIcon(1220, 420, 240 * lerp(0.7, 1, clamp(sk)), clamp(sk));
+        const na = ease.out(seg(t, 53.7, 54.3));
+        ctx.save();
+        ctx.globalAlpha *= na;
+        text('Nightshift', 700, 616, font(600, 60), '#F3E9CF', 'center');
+        text('Dayshift', 1220, 616, font(600, 60), '#1E2A47', 'center');
+        ctx.restore();
+        // 一张白卡片：一句话、支持的 AI、平台
+        const ca = ease.out(seg(t, 54.3, 55.0));
+        if (ca > 0) {
+          ctx.save();
+          ctx.globalAlpha *= ca;
+          ctx.translate(0, (1 - ca) * 20);
+          ctx.save();
+          ctx.shadowColor = 'rgba(10,15,40,0.25)';
+          ctx.shadowBlur = 50;
+          ctx.shadowOffsetY = 16;
+          rr(W / 2 - 560, 712, 1120, 214, 26);
+          ctx.fillStyle = '#ffffff';
+          ctx.fill();
+          ctx.restore();
+          text('让多个 AI 在同一个项目里协作', W / 2, 790, font(700, 48), '#1c1c1a', 'center');
+          text('Claude Code   Codex   Gemini CLI   OpenCode   Grok Build   pi   Hermes Agent', W / 2, 846, font(400, 23, MONO), '#74736d', 'center');
+          text('Night/Dayshift', W / 2, 894, font(400, 21), '#9e9d97', 'center');
+          ctx.restore();
+        }
+      }
+
+      // ---------- 一帧 ----------
+      function draw(t) {
+        DL = daylight(t);
+        TH = DL;
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.globalAlpha = 1;
+        drawSky(t);
+        drawCelestial(t);
+        drawCrew(t);
+        const ws = winState(t);
+        if (ws) drawWindowThemed(t, ws);
+        drawCaptions(t);
+        drawLockup(t);
+        drawEnd(t);
+        // 开头从黑里亮起来，结尾暗下去
+        const black = Math.max(1 - ease.out(seg(t, 0, 0.9)), ease.inOut(seg(t, 58.6, 60)));
+        if (black > 0) {
+          ctx.globalAlpha = black;
+          ctx.fillStyle = '#000';
+          ctx.fillRect(0, 0, W, H);
+          ctx.globalAlpha = 1;
+        }
+      }
+
+      // ---------- 导出：每帧交给 WebCodecs 编成 H.264，再自己封装成 MP4 ----------
+      function mp4(samples, avcC, w, h, fps) {
+        const enc = new TextEncoder();
+        const u32 = (v) => {
+          const b = new Uint8Array(4);
+          new DataView(b.buffer).setUint32(0, v);
+          return b;
+        };
+        const u16 = (v) => {
+          const b = new Uint8Array(2);
+          new DataView(b.buffer).setUint16(0, v);
+          return b;
+        };
+        const zeros = (n) => new Uint8Array(n);
+        const box = (type, ...parts) => {
+          const len = 8 + parts.reduce((a, p) => a + p.length, 0);
+          const b = new Uint8Array(len);
+          new DataView(b.buffer).setUint32(0, len);
+          b.set(enc.encode(type), 4);
+          let o = 8;
+          for (const p of parts) {
+            b.set(p, o);
+            o += p.length;
+          }
+          return b;
+        };
+        const full = (type, version, flags, ...parts) => box(type, new Uint8Array([version, (flags >> 16) & 255, (flags >> 8) & 255, flags & 255]), ...parts);
+        const matrix = new Uint8Array(36);
+        const mv = new DataView(matrix.buffer);
+        mv.setUint32(0, 0x00010000);
+        mv.setUint32(16, 0x00010000);
+        mv.setUint32(32, 0x40000000);
+        const n = samples.length;
+        const TS = fps * 1000; // 每帧 1000 个单位
+        const ms = Math.round((n * 1000) / fps);
+        const ftyp = box('ftyp', enc.encode('isom'), u32(0x200), enc.encode('isom'), enc.encode('iso2'), enc.encode('avc1'), enc.encode('mp41'));
+        const keys = [];
+        samples.forEach((s, i) => s.key && keys.push(u32(i + 1)));
+        const moov = (offset) =>
+          box(
+            'moov',
+            full('mvhd', 0, 0, u32(0), u32(0), u32(1000), u32(ms), u32(0x00010000), u16(0x0100), zeros(10), matrix, zeros(24), u32(2)),
+            box(
+              'trak',
+              full('tkhd', 0, 3, u32(0), u32(0), u32(1), u32(0), u32(ms), zeros(8), u16(0), u16(0), u16(0), u16(0), matrix, u32(w << 16), u32(h << 16)),
+              box(
+                'mdia',
+                full('mdhd', 0, 0, u32(0), u32(0), u32(TS), u32(n * 1000), u16(0x55c4), u16(0)),
+                full('hdlr', 0, 0, u32(0), enc.encode('vide'), zeros(12), enc.encode('VideoHandler\0')),
+                box(
+                  'minf',
+                  full('vmhd', 0, 1, zeros(8)),
+                  box('dinf', full('dref', 0, 0, u32(1), full('url ', 0, 1))),
+                  box(
+                    'stbl',
+                    full('stsd', 0, 0, u32(1), box('avc1', zeros(6), u16(1), zeros(16), u16(w), u16(h), u32(0x00480000), u32(0x00480000), u32(0), u16(1), zeros(32), u16(0x18), u16(0xffff), box('avcC', avcC))),
+                    full('stts', 0, 0, u32(1), u32(n), u32(1000)),
+                    full('stss', 0, 0, u32(keys.length), ...keys),
+                    full('stsc', 0, 0, u32(1), u32(1), u32(n), u32(1)),
+                    full('stsz', 0, 0, u32(0), u32(n), ...samples.map((s) => u32(s.data.length))),
+                    full('stco', 0, 0, u32(1), u32(offset))
+                  )
+                )
+              )
+            )
+          );
+        const head = moov(0).length;
+        const dataLen = samples.reduce((a, s) => a + s.data.length, 0);
+        const out = new Uint8Array(ftyp.length + head + 8 + dataLen);
+        out.set(ftyp, 0);
+        out.set(moov(ftyp.length + head + 8), ftyp.length); // moov 放在前面，网页和手机上能边下边放
+        let o = ftyp.length + head;
+        out.set(u32(8 + dataLen), o);
+        out.set(enc.encode('mdat'), o + 4);
+        o += 8;
+        for (const s of samples) {
+          out.set(s.data, o);
+          o += s.data.length;
+        }
+        return out;
+      }
+
+      async function exportMP4() {
+        await ready;
+        const samples = [];
+        let avcC = null;
+        let failed = null;
+        let lastTs = -1;
+        const encoder = new VideoEncoder({
+          output: (chunk, meta) => {
+            if (meta && meta.decoderConfig && meta.decoderConfig.description) avcC = new Uint8Array(meta.decoderConfig.description);
+            if (chunk.timestamp <= lastTs) failed = new Error('编码器输出的帧顺序不对（有 B 帧？）');
+            lastTs = chunk.timestamp;
+            const data = new Uint8Array(chunk.byteLength);
+            chunk.copyTo(data);
+            samples.push({ data, key: chunk.type === 'key' });
+          },
+          error: (e) => (failed = e),
+        });
+        encoder.configure({ codec: 'avc1.640028', width: W, height: H, bitrate: 14_000_000, framerate: FPS, avc: { format: 'avc' }, latencyMode: 'quality' });
+        const N = DURATION * FPS;
+        for (let i = 0; i < N; i++) {
+          if (failed) throw failed;
+          draw(i / FPS);
+          const frame = new VideoFrame(cv, { timestamp: Math.round((i * 1e6) / FPS), duration: Math.round(1e6 / FPS) });
+          encoder.encode(frame, { keyFrame: i % (FPS * 2) === 0 });
+          frame.close();
+          while (encoder.encodeQueueSize > 8) await new Promise((r) => setTimeout(r, 2));
+          if (i % 150 === 0) console.log(`[export] ${i}/${N}`);
+        }
+        await encoder.flush();
+        if (failed) throw failed;
+        if (!avcC) throw new Error('编码器没有给出 avcC');
+        console.log(`[export] ${samples.length} 帧，封装 MP4`);
+        return mp4(samples, avcC, W, H, FPS);
+      }
+
+      // 截某一刻的画面（检查用）
+      async function still(t) {
+        await ready;
+        draw(t);
+        return cv.toDataURL('image/png');
+      }
+
+      // 系统字体先加载好再画，不然第一帧会用到备用字体
+      const ready = Promise.all(
+        ['400 24px Inter', '600 24px Inter', '400 24px "Noto Sans SC"', '500 24px "Noto Sans SC"', '700 24px "Noto Sans SC"', '400 24px "Cascadia Mono"', '500 24px "Cascadia Mono"'].map((f) =>
+          document.fonts.load(f, 'Aa中文').catch(() => {})
+        )
+      ).then(() => {
+        MSGS.forEach(msgHeight);
+      });
+      window.exportMP4 = exportMP4;
+      window.still = still;
+      window.promoReady = ready;
+
+      // ---------- 在浏览器里实时播放：空格暂停，← → 前后两秒；网址后面加 ?t=12.5 停在那一刻 ----------
+      const params = new URLSearchParams(location.search);
+      if (params.get('mode') !== 'export') {
+        let start = performance.now();
+        let paused = params.has('t');
+        let at = Number(params.get('t')) || 0;
+        const hud = document.getElementById('hud');
+        addEventListener('keydown', (e) => {
+          if (e.key === ' ') {
+            paused = !paused;
+            start = performance.now() - at * 1000;
+          } else if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+            at = clamp(at + (e.key === 'ArrowRight' ? 2 : -2), 0, DURATION - 0.01);
+            start = performance.now() - at * 1000;
+          } else return;
+          e.preventDefault();
+        });
+        ready.then(() => {
+          const loop = () => {
+            if (!paused) at = ((performance.now() - start) / 1000) % DURATION;
+            draw(at);
+            hud.textContent = `${at.toFixed(1)}s　空格 暂停 / 播放　← → 前后 2 秒`;
+            requestAnimationFrame(loop);
+          };
+          loop();
+        });
+      }
+    </script>
+  </body>
+</html>

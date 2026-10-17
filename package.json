@@ -1,0 +1,80 @@
+{
+  "name": "agent-chat",
+  "productName": "Nightshift",
+  "version": "0.10.0",
+  "description": "让多个 AI（Claude Code、Codex、OpenCode、各种 API 模型）在同一个项目里分工协作、互相交流的桌面工具",
+  "author": "Agent Chat",
+  "private": true,
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "electron .",
+    "web": "node server/index.js --open",
+    "test": "node test/run.js",
+    "icon": "node scripts/make-icon.js",
+    "vendor": "node scripts/vendor.js",
+    "predist": "node scripts/vendor.js",
+    "dist": "electron-builder --win"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@xterm/addon-fit": "0.11.0",
+    "@xterm/addon-web-links": "0.12.0",
+    "@xterm/xterm": "6.0.0",
+    "electron": "^44.7.2",
+    "electron-builder": "^26.15.3",
+    "opencc-js": "^1.0.5"
+  },
+  "build": {
+    "appId": "com.agentchat.desktop",
+    "productName": "Nightshift",
+    "copyright": "Agent Chat",
+    "npmRebuild": false,
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "electron/**",
+      "server/**",
+      "public/**",
+      "build/icon.ico",
+      "build/icon.png",
+      "build/icon-day.ico",
+      "build/icon-day.png",
+      "package.json",
+      "README*.md",
+      "!**/*.pdb",
+      "!**/*.map"
+    ],
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Agent Chat",
+      "installerLanguages": [
+        "zh_CN"
+      ],
+      "language": "2052",
+      "artifactName": "Nightshift-Setup-${version}.exe"
+    },
+    "portable": {
+      "artifactName": "Nightshift-${version}-portable.exe"
+    },
+    "asar": false
+  },
+  "dependencies": {
+    "@lydell/node-pty": "1.2.0-beta.15"
+  }
+}

@@ -1,0 +1,9 @@
+data/
+data-dev/
+dist/
+node_modules/
+*.log
+# 编辑器 / Claude Code 的本地配置
+.claude/
+# 宣传视频太大，不进仓库（用 promo/export.js 重新导出）
+promo/*.mp4

@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Nightshift</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2064%2064%22%3E%3Crect%20x%3D%222%22%20y%3D%222%22%20width%3D%2260%22%20height%3D%2260%22%20rx%3D%2214%22%20fill%3D%22%2312183A%22%2F%3E%3Ccircle%20cx%3D%2227%22%20cy%3D%2234%22%20r%3D%2218%22%20fill%3D%22%23F3E9CF%22%2F%3E%3Ccircle%20cx%3D%2237%22%20cy%3D%2227%22%20r%3D%2215%22%20fill%3D%22%2312183A%22%2F%3E%3Cpath%20d%3D%22M35%2022l6%205.5-6%205.5M44%2033h6%22%20fill%3D%22none%22%20stroke%3D%22%23FFB547%22%20stroke-width%3D%223.6%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%2F%3E%3C%2Fsvg%3E" />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <div id="app" class="app">
+      <!-- 沉浸式标题栏：内容由 app.js 生成，可以拖动窗口 -->
+      <header class="titlebar" id="titlebar"></header>
+      <aside class="rail" id="rail" aria-label="项目和会话">
+        <div class="rail-top" id="railTop"></div>
+        <section class="rail-sec" id="projects"></section>
+        <footer class="rail-foot" id="envFoot"></footer>
+      </aside>
+      <main class="main" id="main"></main>
+      <!-- 右侧面板：文件、侧边对话、终端、浏览器（panel.js） -->
+      <aside class="panel" id="panel" aria-label="右侧面板" hidden></aside>
+    </div>
+    <div id="modalRoot"></div>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="i18n.js"></script>
+    <script src="boot.js"></script>
+    <script src="markdown.js"></script>
+    <script src="panel.js"></script>
+    <script src="account.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>
