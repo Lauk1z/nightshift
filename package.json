@@ -14,7 +14,7 @@
     "screenshots": "node scripts/screenshots",
     "vendor": "node scripts/vendor.js",
     "predist": "node scripts/vendor.js",
-    "dist": "electron-builder --win"
+    "dist": "electron-builder --win --publish never"
   },
   "engines": {
     "node": ">=18"
@@ -73,9 +73,17 @@
     "portable": {
       "artifactName": "Nightshift-${version}-portable.exe"
     },
-    "asar": false
+    "asar": false,
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "Lauk1z",
+        "repo": "nightshift"
+      }
+    ]
   },
   "dependencies": {
-    "@lydell/node-pty": "1.2.0-beta.15"
+    "@lydell/node-pty": "1.2.0-beta.15",
+    "electron-updater": "^6.8.9"
   }
 }

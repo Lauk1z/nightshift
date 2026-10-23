@@ -1,11 +1,12 @@
 'use strict';
 // Nightshift 桌面版（浅色外观时叫 Dayshift）：在程序里直接启动本地服务（server/），用原生窗口显示界面。
-// 和浏览器版用的是同一套界面和服务，只是多了原生的选文件夹对话框、桌面通知、关闭前提醒。
+// 和浏览器版用的是同一套界面和服务，只是多了原生的选文件夹对话框、桌面通知、关闭前提醒，安装版还会自动更新（updater.js）。
 const { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, Notification, nativeTheme, screen, session, shell } = require('electron');
 const fs = require('fs');
 const path = require('path');
 // 对话框和右键菜单的文字跟着设置里的语言（和服务端共用一套词典）
 const { t: tr, setLang } = require('../server/i18n');
+const updater = require('./updater');
 
 const APP_ID = 'com.agentchat.desktop';
 const PORT = 37210; // 固定端口：界面里的草稿和上次打开的项目存在浏览器存储里，端口变了就找不回来
@@ -37,6 +38,7 @@ nativeTheme.on('updated', () => {
 
 let win = null;
 let srv = null;
+let updates = null; // 自动更新（updater.js）
 let quitting = false;
 
 // ---------- 窗口位置和大小 ----------
@@ -72,6 +74,21 @@ function showWindow() {
 
 function openExternal(url) {
   if (/^https?:\/\//i.test(url)) shell.openExternal(url);
+}
+
+// 还有成员在工作时先问一声（关窗口、重启更新都会停掉它们）。返回 true 表示用户同意
+function confirmStop(okLabel, detail) {
+  const choice = dialog.showMessageBoxSync(win, {
+    type: 'question',
+    buttons: [okLabel, tr('取消')],
+    defaultId: 1,
+    cancelId: 1,
+    noLink: true,
+    title: appName(),
+    message: tr('还有 AI 成员在工作'),
+    detail,
+  });
+  return choice === 0;
 }
 
 async function createWindow() {
@@ -143,21 +160,9 @@ async function createWindow() {
   });
 
   win.on('close', (e) => {
-    if (!quitting && srv && srv.busy()) {
-      const choice = dialog.showMessageBoxSync(win, {
-        type: 'question',
-        buttons: [tr('停止并退出'), tr('取消')],
-        defaultId: 1,
-        cancelId: 1,
-        noLink: true,
-        title: appName(),
-        message: tr('还有 AI 成员在工作'),
-        detail: tr('退出会停止它们手上的工作。确定要退出吗？'),
-      });
-      if (choice !== 0) {
-        e.preventDefault();
-        return;
-      }
+    if (!quitting && srv && srv.busy() && !confirmStop(tr('停止并退出'), tr('退出会停止它们手上的工作。确定要退出吗？'))) {
+      e.preventDefault();
+      return;
     }
     saveBounds();
   });
@@ -288,6 +293,23 @@ ipcMain.handle('notify', (e, { title, body } = {}) => {
   n.show();
 });
 
+// 自动更新：界面显示状态、手动检查、点「重启以完成更新」。状态变了由 main 推给界面（update-state）
+ipcMain.handle('update-state', () => (updates ? updates.state() : null));
+ipcMain.handle('update-check', () => (updates ? updates.check(true) : null));
+ipcMain.handle('update-install', async () => {
+  if (!updates || updates.state().status !== 'ready') return false;
+  if (srv && srv.busy() && !confirmStop(tr('停止并更新'), tr('更新要重启 {app}，会停止它们手上的工作。确定现在更新吗？', { app: appName() }))) return false;
+  quitting = true;
+  // 安装前先停好成员、终端和服务：quitAndInstall 直接 app.quit()，不经过下面的 window-all-closed
+  const ok = await updates.install(() => srv && srv.close());
+  if (!ok) {
+    // 没能启动安装（几乎不会发生）：服务已经停了，重新打开程序
+    app.relaunch();
+    app.exit(0);
+  }
+  return ok;
+});
+
 // ---------- 启动和退出 ----------
 if (!app.requestSingleInstanceLock()) {
   // 已经开着一个了：让那个窗口到前面来，这个直接退出
@@ -314,6 +336,11 @@ if (!app.requestSingleInstanceLock()) {
       app.exit(1);
       return;
     }
+    // 自动更新：只有安装版会在后台检查（见 updater.js）。日志在数据文件夹外面，%APPDATA%\Agent Chat\logs
+    updates = updater.start({ app, logFile: path.join(app.getPath('userData'), 'logs', 'updater.log') });
+    updates.onChange((s) => {
+      if (win && !win.isDestroyed()) win.webContents.send('update-state', s);
+    });
     await createWindow();
   });
 

@@ -214,6 +214,7 @@
     gauge: I('<path d="M2.6 11.6a5.6 5.6 0 1110.8 0"/><path d="M8 9.6l2.6-3.2"/><circle cx="8" cy="9.8" r=".9"/>'),
     pin: I('<path d="M5.5 2.2h5M6.5 2.2v4L4.2 9.4h7.6L9.5 6.2v-4M8 9.4v4.4"/>'),
     help: I('<circle cx="8" cy="8" r="6"/><path d="M6.3 6.2a1.8 1.8 0 113 1.4c-.6.4-1.3.8-1.3 1.6M8 11.1v.1"/>'),
+    update: I('<circle cx="8" cy="8" r="6"/><path d="M8 11V5.3M5.6 7.6L8 5.2l2.4 2.4"/>'),
   };
   // 名字和标志跟着深浅色换：深色叫 Nightshift（夜班，月亮里亮着 >_），浅色叫 Dayshift（日班，太阳里写着 >_）。
   // 和 scripts/make-icon.js 画的应用图标是同一个图案。两个标志都放进页面，样式表按当前外观只显示一个
@@ -904,7 +905,10 @@
         { label: tr('开发者工具'), hint: 'F12', run: () => desktop.action('devtools') }
       );
     }
-    items.push('-', { label: tr('关于 {app}', { app: appName() }), icon: ICONS.info, run: aboutModal });
+    items.push('-');
+    const up = account && account.updateMenuItem();
+    if (up) items.push(up);
+    items.push({ label: tr('关于 {app}', { app: appName() }), icon: ICONS.info, run: aboutModal });
     openMenu(anchor, items, { align: 'left' });
   }
 
@@ -990,10 +994,12 @@
       <p>${tr('让多个 AI（Claude Code、Codex、OpenCode、各种 API 模型）在同一个项目里分工协作、互相交流。')}</p>
       <dl>
         <dt>${tr('版本')}</dt><dd>${esc(env.version || '')}${env.desktop ? tr('（桌面版）') : tr('（浏览器版）')}</dd>
+        ${desktop && desktop.updateState ? `<dt>${tr('更新')}</dt><dd class="about-update" data-about-update></dd>` : ''}
         <dt>${tr('数据保存在')}</dt><dd><code>${esc(env.dataDir || '')}</code></dd>
         <dt>Node.js</dt><dd>${esc(env.node || '')}</dd>
       </dl></div>`);
     const m = openModal({ title: tr('关于 {app}', { app: appName() }), body });
+    if (account) account.aboutUpdate($('[data-about-update]', body), m); // 自动更新的状态（见 account.js）
     footButtons(m, ['spacer', { label: tr('关闭'), kind: 'primary' }]);
   }
 
@@ -3368,7 +3374,7 @@
   // ---------- 点击 ----------
   document.addEventListener('click', async (e) => {
     const t = e.target.closest(
-      '[data-room],[data-new-project],[data-add-member],[data-agent],[data-at],[data-refresh-env],[data-settings],[data-open-folder],[data-stop],[data-continue],[data-work],[data-poke],[data-example],[data-tb],[data-tb-panel],[data-pick],[data-file-open],[data-file-menu],[data-file-link],[data-files-more],[data-copy-msg],[data-copy-code],[data-acct],[data-acct-tools],[data-to-pick],[data-proj-toggle],[data-new-chat],[data-proj-menu],[data-chat-menu],[data-members],#jump'
+      '[data-room],[data-new-project],[data-add-member],[data-agent],[data-at],[data-refresh-env],[data-settings],[data-open-folder],[data-stop],[data-continue],[data-work],[data-poke],[data-example],[data-tb],[data-tb-panel],[data-pick],[data-file-open],[data-file-menu],[data-file-link],[data-files-more],[data-copy-msg],[data-copy-code],[data-acct],[data-acct-tools],[data-update],[data-to-pick],[data-proj-toggle],[data-new-chat],[data-proj-menu],[data-chat-menu],[data-members],#jump'
     );
     // 成员面板开着时，点到面板外面就收起
     if ($('#membersPop') && !e.target.closest('#membersPop') && !e.target.closest('[data-members]')) closeMembersPop();
@@ -3427,6 +3433,7 @@
       if (d.tbPanel) return panel.toggle(d.tbPanel);
       if ('acct' in d) return account.accountMenu(t);
       if ('acctTools' in d) return account.toolsMenu(t);
+      if ('update' in d) return account.installUpdate(); // 左下角的「重启以完成更新」
       if (d.tb) {
         e.stopPropagation();
         switch (d.tb) {

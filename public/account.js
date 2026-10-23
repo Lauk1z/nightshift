@@ -1,5 +1,6 @@
 'use strict';
 // 左下角的账户区（照着 Claude 桌面版）：头像和名字，点开是菜单 —— 设置、用量、语言、使用说明……
+// 安装版下载好新版本时，这一行上面会多一个「重启以完成更新」。
 // 「用量」页：每个模型用了多少 token，一年的热力图（每天 / 每周 / 累计），外加按模型的明细表。
 // app.js 调用 createAccount(ctx) 创建。
 window.createAccount = function createAccount(ctx) {
@@ -56,6 +57,111 @@ window.createAccount = function createAccount(ctx) {
   const fmtMonth = (d) => d.toLocaleDateString(LOC(), { month: 'short' });
   const fmtWeekday = (d) => d.toLocaleDateString(LOC(), { weekday: 'short' });
 
+  // ---------- 自动更新（只有安装版会检查，见 electron/updater.js） ----------
+  // 状态由主进程推过来（status：off / idle / checking / latest / downloading / ready / installing / error）。
+  // 网页版没有 desktop，这些都不显示；免安装版、开发模式是 off，「关于」里写明原因
+  const RELEASES = 'https://github.com/Lauk1z/nightshift/releases/latest';
+  let upd = null;
+  const updWatch = new Set(); // 开着的「关于」窗口里的那一行
+  function setUpdate(s) {
+    const was = upd && upd.status;
+    upd = s || null;
+    renderFoot();
+    for (const fn of updWatch) fn();
+    if (upd && upd.status === 'ready' && was !== 'ready') toast(t('新版本 {version} 已下载好，重启以完成更新', { version: upd.next }));
+  }
+  if (desktop && desktop.updateState) {
+    desktop.onUpdate(setUpdate);
+    desktop.updateState().then(setUpdate, () => {});
+  }
+  const checkUpdate = () => desktop.checkUpdate().then(setUpdate);
+  // 还有成员在工作的话，主进程会先弹窗问一声
+  const installUpdate = () => desktop.installUpdate();
+
+  function updateText(s) {
+    switch (s.status) {
+      case 'off':
+        return (
+          {
+            portable: t('免安装版不会自动更新，新版本请到 GitHub 下载'),
+            unpacked: t('这份程序不是用安装版装的，不会自动更新'),
+            dev: t('开发模式（npm start）不检查更新'),
+          }[s.reason] || t('这个系统上不会自动更新')
+        );
+      case 'checking':
+        return t('正在检查更新……');
+      case 'latest':
+        return t('已是最新版本');
+      case 'downloading':
+        return t('正在下载 {version}……{percent}%', { version: s.next, percent: s.percent });
+      case 'ready':
+        return t('{version} 已下载好', { version: s.next });
+      case 'installing':
+        return t('正在关闭 {app} 并安装更新，装好后会自动打开', { app: appName() });
+      case 'error':
+        return (
+          {
+            network: t('连不上 GitHub（可能是没联网），稍后会自动再试'),
+            limited: t('GitHub 暂时限制了请求次数，稍后会自动再试'),
+            signature: t('下载的安装包校验不对，已经丢弃，稍后会重新下载'),
+            checksum: t('下载的安装包校验不对，已经丢弃，稍后会重新下载'),
+            missing: t('GitHub 上最新的版本还没有提供自动更新'),
+          }[s.error] || t('检查更新时出错，稍后会自动再试')
+        );
+      default:
+        return t('启动一会儿后会自动检查更新');
+    }
+  }
+
+  // 账户菜单和标题栏 ☰ 菜单里的那一项：下载好了是「重启以完成更新」，平时是「检查更新…」（打开「关于」看结果）
+  function updateMenuItem() {
+    if (!upd || upd.status === 'off' || upd.status === 'installing') return null;
+    if (upd.status === 'ready') return { label: t('重启以完成更新'), hint: upd.next, icon: ICONS.update, run: installUpdate };
+    return {
+      label: t('检查更新…'),
+      icon: ICONS.update,
+      run: () => {
+        aboutModal();
+        return checkUpdate();
+      },
+    };
+  }
+
+  // 「关于」里「更新」那一行：状态、检查更新 / 重启以完成更新按钮；窗口开着时跟着状态变
+  function aboutUpdate(dd, m) {
+    if (!dd) return;
+    const draw = () => {
+      const s = upd || { status: 'idle' };
+      let act = '';
+      if (s.status === 'ready') act = `<button type="button" class="btn small" data-upd-act="install">${esc(t('重启以完成更新'))}</button>`;
+      else if (['idle', 'latest', 'error'].includes(s.status)) act = `<button type="button" class="btn small" data-upd-act="check">${esc(t('检查更新'))}</button>`;
+      else if (s.status === 'off' && s.reason === 'portable') act = `<a href="${RELEASES}" target="_blank" rel="noreferrer">${esc(t('打开下载页'))}</a>`;
+      const log = s.status === 'error' && s.log ? `<small>${esc(t('详情在日志里：'))}<code>${esc(s.log)}</code></small>` : '';
+      dd.innerHTML = `<span>${esc(updateText(s))}</span>${act}${log}`;
+    };
+    draw();
+    updWatch.add(draw);
+    const prev = m.onClose;
+    m.onClose = () => {
+      updWatch.delete(draw);
+      if (prev) prev();
+    };
+    dd.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-upd-act]');
+      if (!b) return;
+      (b.dataset.updAct === 'install' ? installUpdate() : checkUpdate()).catch((err) => toast(err.message, true));
+    });
+  }
+
+  // 新版本下载好了：账户那一行上面多一个「重启以完成更新」
+  function updateCta() {
+    if (!upd || (upd.status !== 'ready' && upd.status !== 'installing')) return '';
+    const busy = upd.status === 'installing';
+    return `<button type="button" class="upd-cta" data-update${busy ? ' disabled' : ''} title="${esc(updateText(upd))}">${ICONS.update}<span>${esc(
+      busy ? t('正在安装更新……') : t('重启以完成更新')
+    )}</span><small>${esc(upd.next || '')}</small></button>`;
+  }
+
   // ---------- 左下角那一行 ----------
   function renderFoot() {
     const box = $('#envFoot');
@@ -65,7 +171,7 @@ window.createAccount = function createAccount(ctx) {
     const states = !S.env ? ['wait', 'wait', 'wait'] : TOOLS.filter((id) => envOf(id).installed).map((id) => (envOf(id).outdated ? 'old' : 'ok'));
     const dots = (states.length ? states : ['no']).map((s) => `<i class="tool-pip ${s}"></i>`).join('');
     const ready = S.env ? TOOLS.filter((id) => envOf(id).installed && !envOf(id).outdated).length : 0;
-    box.innerHTML = `<div class="acct-row">
+    box.innerHTML = `${updateCta()}<div class="acct-row">
       <button type="button" class="acct" data-acct aria-haspopup="menu" title="${esc(t('账户和设置'))}">
         <span class="avatar acct-av" style="--c:${userColor()}">${esc(initials(name))}</span>
         <span class="acct-name">${esc(name)}</span>${ICONS.chevDown}</button>
@@ -87,7 +193,10 @@ window.createAccount = function createAccount(ctx) {
       { label: t('重新检测 AI 工具'), icon: ICONS.refresh, run: () => redetect() }
     );
     if (desktop) items.push({ label: t('打开数据文件夹'), icon: ICONS.folder, run: () => api('POST', '/api/open-data') });
-    items.push('-', { label: t('关于 {app}', { app: appName() }), icon: ICONS.info, run: aboutModal });
+    items.push('-');
+    const up = updateMenuItem();
+    if (up) items.push(up);
+    items.push({ label: t('关于 {app}', { app: appName() }), icon: ICONS.info, run: aboutModal });
     openMenu(anchor, items, { align: 'left', width: anchor.closest('.acct-row').offsetWidth, above: true });
   }
 
@@ -618,5 +727,5 @@ window.createAccount = function createAccount(ctx) {
     render();
   }
 
-  return { renderFoot, accountMenu, toolsMenu, openSettings, openUsage, openHelp, applyTheme, initials, fmtTokens };
+  return { renderFoot, accountMenu, toolsMenu, openSettings, openUsage, openHelp, applyTheme, initials, fmtTokens, updateMenuItem, aboutUpdate, installUpdate };
 };

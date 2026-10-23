@@ -40,8 +40,8 @@ Download the installer from the [Releases](https://github.com/Lauk1z/nightshift/
 
 | File | How to use it |
 | --- | --- |
-| `Nightshift-Setup-0.11.0.exe` | Installer. Double-click to install; it adds shortcuts to the desktop and Start menu. Recommended. |
-| `Nightshift-0.11.0-portable.exe` | Portable. Double-click to run, no install, so it can live on a USB stick. It unpacks itself on every start, so it opens a few seconds slower. |
+| `Nightshift-Setup-0.11.0.exe` | Installer. Double-click to install; it adds shortcuts to the desktop and Start menu, and it updates itself from then on (see the next section). Recommended. |
+| `Nightshift-0.11.0-portable.exe` | Portable. Double-click to run, no install, so it can live on a USB stick. It unpacks itself on every start, so it opens a few seconds slower, and it doesn't update itself. |
 
 The programs aren't code-signed, so on first run Windows may say "Windows protected your PC". Click "More info", then "Run anyway".
 
@@ -70,6 +70,22 @@ After installing or updating a tool, click "Re-detect" in that dots menu (it's a
 - Model lists are reloaded too.
 
 The same goes for a new computer: install the AI tools, open Nightshift, and it finds them along with the models and thinking efforts you can choose. If Claude Code on that computer has no `settings.json`, the generic aliases fable, opus, sonnet and haiku are listed.
+
+## Automatic updates
+
+The installed version updates itself, so you don't have to download new releases by hand:
+
+1. About 15 seconds after each start, Nightshift checks GitHub for a new version in the background. If you leave it running, it checks again every 6 hours.
+2. If there is one, it downloads in the background without getting in the way of your work.
+3. Once it's downloaded, "Restart to update" appears above your name at the bottom left (it's also in the account menu and the ☰ menu). Click it whenever it suits you: Nightshift closes, installs the new version in the background and opens again. If AI members are still working, it asks first.
+
+Nothing is installed until you click, and quitting Nightshift doesn't install it either. You're reminded again on the next start, and a finished download isn't downloaded again.
+
+- To check right away, use "Check for updates…" in the account menu. "About" shows the current version and the update status.
+- Only the installed version updates itself. The portable version, the browser version via `start.bat` and `npm start` don't check; get new versions from [Releases](https://github.com/Lauk1z/nightshift/releases/latest).
+- Updating only replaces the program files. Projects, chat history and settings live in `%APPDATA%\Agent Chat\data` and aren't touched.
+- Being offline, GitHub being unreachable or a download that fails verification never interrupts you with a pop-up. It's only written to the log (`%APPDATA%\Agent Chat\logs\updater.log`) and tried again later, and "About" shows the reason in one line.
+- Version 0.11.0 and earlier can't update themselves yet: install a newer version by hand once, and it updates itself from then on.
 
 ## How it works
 
@@ -123,7 +139,7 @@ The window has no system title bar; the title bar blends into the interface (min
 
 | Item | What it does |
 | --- | --- |
-| ☰ | Menu: new project, re-detect AI tools, zoom, reload, developer tools, about |
+| ☰ | Menu: new project, re-detect AI tools, zoom, reload, developer tools, check for updates (installed version), about |
 | Sidebar icon | Collapse or expand the project list (Ctrl+B) |
 | ← → | Go back and forward between chats you've opened (Alt+← / Alt+→, or the mouse side buttons) |
 | Project name | Project actions: new chat, project settings, open in File Explorer, copy folder path, delete project |
@@ -145,6 +161,8 @@ Click your avatar and name at the bottom left to open the account menu (just lik
 | User guide | This document |
 | Re-detect AI tools | Look for Claude Code, Codex and OpenCode on this computer again |
 | Open data folder | Projects, chat history, settings and usage records all live here (desktop app) |
+| Check for updates… | Installed version only: checks for a new version right away; the result shows in "About". Once a new version has downloaded, this becomes "Restart to update" (see "Automatic updates") |
+| About | Version, update status and where the data folder is |
 
 - If you leave your name blank, your Windows user name is used. It's shown at the bottom left and on the Usage page.
 - The interface language is also the AI members' default reply language. If you talk to them in another language, they switch. When you create a project, the members' responsibilities are written in this language too.
@@ -323,6 +341,7 @@ API models can't read or write files on their own, so Nightshift gives them a se
 - The side chat is stored in `data/rooms/<chat id>/side.jsonl` and never written to the chat log in the project folder
 - App settings are stored in `data/settings.json` and usage in `data/usage.jsonl` (only numbers, model names and member names, no conversation content)
 - The built-in terminal runs with your own permissions, just like a PowerShell window you open yourself, and closes when Nightshift closes
+- The installed version contacts github.com to check for and download new versions (see "Automatic updates"). The requests contain no projects, chat history or account details, only a random ID (electron-updater uses it to roll out new versions in stages; it's stored in `%APPDATA%\Agent Chat\.updaterId`). Downloaded installers are kept in `%LOCALAPPDATA%\agent-chat-updater`
 
 ## FAQ
 
@@ -347,6 +366,9 @@ In the terminal, Ctrl+R searches command history, so reloading the interface is 
 **Changing the port of the browser version?**
 Run `node server/index.js --port 4000 --open`.
 
+**Automatic updates never seem to happen?**
+Open "About" and look at the "Updates" row: it shows the current status or why it didn't work (offline, GitHub rate limits, no `latest.yml` in the latest release…). The full record is in `%APPDATA%\Agent Chat\logs\updater.log`. The portable and browser versions don't update themselves.
+
 ## Development and packaging
 
 ```bash
@@ -369,13 +391,29 @@ Runs the tests. No network access and no real AI calls are needed.
 npm run dist
 ```
 
-Rebuilds the installer and portable exe into `dist/`. Before packaging it copies xterm.js, used by the terminal, into `public/vendor/` (`npm run vendor`). The icon is generated with `npm run icon` (`scripts/make-icon.js`).
+Rebuilds the installer and portable exe into `dist/`, plus the `latest.yml` and `Nightshift-Setup-<version>.exe.blockmap` that automatic updates need. It only builds; nothing is uploaded to GitHub. Before packaging it copies xterm.js, used by the terminal, into `public/vendor/` (`npm run vendor`). The icon is generated with `npm run icon` (`scripts/make-icon.js`).
+
+To publish a new version:
+
+1. Bump `version` in `package.json`. Automatic updates compare versions with it, so it must be higher than the previous one (say 0.11.0 → 0.12.0).
+2. Run `npm run dist`.
+3. Create a GitHub Release tagged `v` plus the version (such as `v0.12.0`), upload all of the files below from this build's `dist/`, and publish it as a regular release. Automatic updates only look at the latest regular release ("Latest"); drafts and pre-releases don't count.
+
+| File | Purpose |
+| --- | --- |
+| `Nightshift-Setup-<version>.exe` | The installer. It's also what automatic updates download |
+| `latest.yml` | Tells installed copies of Nightshift the newest version number, the installer's file name and its checksum. **Forget it and nobody gets this update** ("About" then says "The latest release on GitHub doesn't offer automatic updates yet") |
+| `Nightshift-Setup-<version>.exe.blockmap` | For incremental updates: next time, computers running this version only download the parts that differ. Without it updates still work, they just download the whole installer (over 100 MB) |
+| `Nightshift-<version>-portable.exe` | The portable version (optional) |
+
+Always upload the `latest.yml` and `.blockmap` this `npm run dist` generated, never edited old ones. Earlier releases only uploaded the installer, which is why 0.11.0 and earlier can't update themselves and need one manual install of a newer version.
 
 The built-in terminal uses [@lydell/node-pty](https://www.npmjs.com/package/@lydell/node-pty), which ships prebuilt binaries, so no build tools are needed.
 
 ```
 electron/
   main.js           Desktop main process: starts the service, immersive title bar, embedded browser, folder picker, notifications, quit confirmation
+  updater.js        Automatic updates (electron-updater, from GitHub Releases, installed version only)
   preload.js        The few native features exposed to the interface
 server/
   index.js          HTTP service, API and SSE push; start() is used by the desktop app
@@ -395,7 +433,7 @@ server/
 public/             Interface (plain JS, no build step)
   app.js            Main interface: title bar, projects and chats, members panel, group chat, message box
   panel.js          Side panel: files, side chat, terminal, browser
-  account.js        Account menu, settings and the Usage page
+  account.js        Account menu, settings, the Usage page and the update prompt
   i18n.js           Interface language: looks up text by its Simplified Chinese original
   i18n/             Dictionaries: en.json (written by hand), zh-Hant.json (generated by scripts/i18n-hant.js)
   vendor/xterm/     Terminal UI (xterm.js, copied by scripts/vendor.js)

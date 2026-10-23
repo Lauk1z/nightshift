@@ -1416,6 +1416,183 @@ test('Markdown 表格：单元格里写成 \\| 的竖线不算分隔（比如代
   assert.strictEqual((html.match(/<td>/g) || []).length, 4);
 });
 
+// ---------- 自动更新（electron/updater.js）：不用 Electron，换成假的 autoUpdater ----------
+test('自动更新：只有 NSIS 安装版检查；开发模式、免安装版、直接运行 win-unpacked 都跳过', () => {
+  const { skipReason } = require('../electron/updater');
+  const dir = 'C:\\Users\\me\\AppData\\Local\\Programs\\Nightshift';
+  const has = (...files) => (p) => files.includes(p);
+  const installed = { isPackaged: true, platform: 'win32', env: {}, execPath: dir + '\\Nightshift.exe', exists: has(dir + '\\Uninstall Nightshift.exe') };
+  assert.strictEqual(skipReason(installed), '');
+  // npm start：没打包
+  assert.strictEqual(skipReason({ ...installed, isPackaged: false, execPath: 'E:\\Agent Chat\\node_modules\\electron\\dist\\electron.exe' }), 'dev');
+  assert.strictEqual(skipReason({ ...installed, platform: 'darwin' }), 'platform');
+  // 免安装版：exe 解压到临时文件夹里运行，PORTABLE_EXECUTABLE_DIR 是原来那个 exe 所在的文件夹
+  const portable = { ...installed, env: { PORTABLE_EXECUTABLE_DIR: 'D:\\U盘' }, execPath: 'C:\\Users\\me\\AppData\\Local\\Temp\\2abcXyz\\Nightshift.exe', exists: () => true };
+  assert.strictEqual(skipReason(portable), 'portable');
+  // 直接运行 dist/win-unpacked 里的 exe：旁边没有卸载程序
+  assert.strictEqual(skipReason({ ...installed, execPath: 'E:\\Agent Chat\\dist\\win-unpacked\\Nightshift.exe' }), 'unpacked');
+  // 卸载程序按 exe 的名字找，大小写不同也认
+  assert.strictEqual(skipReason({ ...installed, execPath: 'D:\\Apps\\NS\\NIGHTSHIFT.EXE', exists: has('D:\\Apps\\NS\\Uninstall NIGHTSHIFT.exe') }), '');
+  if (process.platform === 'win32') {
+    // 真的文件夹：放上卸载程序以后才算安装版
+    const d = tmp();
+    const exe = path.join(d, 'Nightshift.exe');
+    assert.strictEqual(skipReason({ isPackaged: true, platform: 'win32', env: {}, execPath: exe }), 'unpacked');
+    fs.writeFileSync(path.join(d, 'Uninstall Nightshift.exe'), '');
+    assert.strictEqual(skipReason({ isPackaged: true, platform: 'win32', env: {}, execPath: exe }), '');
+  }
+});
+
+test('自动更新：出错的原因（没网、限流、没传 latest.yml、校验和签名不对），不被调用栈里的行号误判', () => {
+  const { errorKind } = require('../electron/updater');
+  const err = (message, extra) => Object.assign(new Error(message), extra);
+  assert.strictEqual(errorKind(err('net::ERR_INTERNET_DISCONNECTED')), 'network');
+  assert.strictEqual(errorKind(err('getaddrinfo ENOTFOUND github.com', { code: 'ENOTFOUND' })), 'network');
+  assert.strictEqual(errorKind(err('429 Too Many Requests\nHeaders: {}', { statusCode: 429, code: 'HTTP_ERROR_429' })), 'limited');
+  // electron-updater 包了一层：里面的错误在 message 里
+  const wrapped = 'Unable to find latest version on GitHub (https://github.com/Lauk1z/nightshift/releases/latest), please ensure a production release exists: ';
+  assert.strictEqual(errorKind(err(wrapped + 'HttpError: 403 Forbidden\n    at x.js:12:3', { code: 'ERR_UPDATER_LATEST_VERSION_NOT_FOUND' })), 'limited');
+  assert.strictEqual(errorKind(err(wrapped + 'Error: net::ERR_NAME_NOT_RESOLVED', { code: 'ERR_UPDATER_LATEST_VERSION_NOT_FOUND' })), 'network');
+  assert.strictEqual(errorKind(err(wrapped + 'HttpError: 404 Not Found', { code: 'ERR_UPDATER_LATEST_VERSION_NOT_FOUND' })), 'missing');
+  assert.strictEqual(errorKind(err('Cannot find latest.yml in the latest release artifacts', { code: 'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND' })), 'missing');
+  assert.strictEqual(errorKind(err('sha512 checksum mismatch, expected abc, got def', { code: 'ERR_CHECKSUM_MISMATCH' })), 'checksum');
+  assert.strictEqual(errorKind(err('New version 0.13.0 is not signed by the application owner: x', { code: 'ERR_UPDATER_INVALID_SIGNATURE' })), 'signature');
+  const disk = err('ENOSPC: no space left on device');
+  disk.stack = 'Error: ENOSPC\n    at AppUpdater.js:429:15\n    at NsisUpdater.js:403:7';
+  assert.strictEqual(errorKind(disk), 'other');
+  assert.strictEqual(errorKind('奇怪的东西'), 'other');
+});
+
+test('自动更新：检查 → 下载 → 等用户点「重启以完成更新」；出错只改状态不抛出，已经下载好的不受影响', async () => {
+  const { Updates } = require('../electron/updater');
+  const { EventEmitter } = require('events');
+  const fake = new EventEmitter();
+  let plan = 'offline';
+  let checks = 0;
+  // 和 electron-updater 一样：检查出错时先发 error 事件再 reject；有新版本时 downloadPromise 是正在进行的下载
+  fake.checkForUpdates = async () => {
+    checks++;
+    fake.emit('checking-for-update');
+    if (plan === 'offline') {
+      const e = new Error('net::ERR_INTERNET_DISCONNECTED');
+      fake.emit('error', e);
+      throw e;
+    }
+    if (plan === 'latest') {
+      fake.emit('update-not-available', { version: '0.12.0' });
+      return { isUpdateAvailable: false };
+    }
+    fake.emit('update-available', { version: '0.13.0' });
+    const downloadPromise = (async () => {
+      await null;
+      fake.emit('download-progress', { percent: 42.7 });
+      await null;
+      if (plan === 'corrupt') {
+        const e = Object.assign(new Error('sha512 checksum mismatch, expected a, got b'), { code: 'ERR_CHECKSUM_MISMATCH' });
+        fake.emit('error', e);
+        throw e;
+      }
+      fake.emit('update-downloaded', { version: '0.13.0' });
+    })();
+    return { isUpdateAvailable: true, downloadPromise };
+  };
+  const installs = [];
+  fake.quitAndInstall = (...args) => installs.push(args);
+  const u = new Updates({ updater: fake, version: '0.12.0', logFile: 'C:\\logs\\updater.log' });
+  const seen = [];
+  u.onChange((s) => seen.push(s.status === 'downloading' ? `downloading ${s.percent}` : s.status));
+  const settle = () => new Promise((r) => setTimeout(r, 5));
+  const unhandled = [];
+  const onUnhandled = (e) => unhandled.push(e);
+  process.on('unhandledRejection', onUnhandled);
+  try {
+    assert.deepStrictEqual(u.state(), { status: 'idle', reason: '', version: '0.12.0', next: '', percent: 0, error: '', log: 'C:\\logs\\updater.log' });
+    assert.strictEqual(await u.install(), false); // 还没下载好，不能装
+    // 没网：状态变成 error，不抛出
+    assert.strictEqual(u.check(true).status, 'checking');
+    await settle();
+    assert.deepStrictEqual([u.state().status, u.state().error], ['error', 'network']);
+    // 已是最新
+    plan = 'latest';
+    u.check();
+    await settle();
+    assert.strictEqual(u.state().status, 'latest');
+    // 下载到一半校验不对
+    plan = 'corrupt';
+    u.check();
+    await settle();
+    assert.deepStrictEqual([u.state().status, u.state().error], ['error', 'checksum']);
+    // 有新版本：后台下载，下载好了等用户点
+    plan = 'new';
+    seen.length = 0;
+    u.check();
+    assert.strictEqual(u.check().status, 'checking'); // 正在查的时候再点一次不会重复查
+    await settle();
+    assert.deepStrictEqual(seen, ['checking', 'checking', 'downloading 0', 'downloading 42', 'ready']);
+    assert.deepStrictEqual([u.state().status, u.state().next, u.state().percent], ['ready', '0.13.0', 100]);
+    assert.deepStrictEqual(installs, []); // 没点就不装
+    // 下载好了以后不再检查；之后再来的错误（比如没网）也不影响
+    const before = checks;
+    u.check(true);
+    await settle();
+    assert.strictEqual(checks, before);
+    fake.emit('error', new Error('net::ERR_NETWORK_CHANGED'));
+    assert.strictEqual(u.state().status, 'ready');
+    // 点了「重启以完成更新」：先停好服务，再静默安装、装完打开（--updated /S --force-run）
+    const order = [];
+    fake.quitAndInstall = (...args) => {
+      order.push('install');
+      installs.push(args);
+    };
+    assert.strictEqual(await u.install(async () => order.push('stop server')), true);
+    assert.deepStrictEqual(order, ['stop server', 'install']);
+    assert.deepStrictEqual(installs, [[true, true]]);
+    assert.strictEqual(u.state().status, 'installing');
+    assert.strictEqual(await u.install(), false); // 不会装两次
+    assert.deepStrictEqual(unhandled, []);
+  } finally {
+    process.off('unhandledRejection', onUnhandled);
+  }
+  // 安装包不见了之类的错误：electron-updater 当场发 error 事件，状态回到 ready，main.js 会重新打开程序
+  const fake2 = new EventEmitter();
+  fake2.quitAndInstall = () => fake2.emit('error', new Error("No update filepath provided, can't quit and install"));
+  const u2 = new Updates({ updater: fake2, version: '0.12.0' });
+  fake2.emit('update-downloaded', { version: '0.13.0' });
+  assert.strictEqual(await u2.install(), false);
+  assert.strictEqual(u2.state().status, 'ready');
+  // 不检查更新的情况（免安装版等）：没有 autoUpdater，检查和安装都什么也不做
+  const off = new Updates({ reason: 'portable', version: '0.12.0' });
+  assert.deepStrictEqual([off.state().status, off.state().reason], ['off', 'portable']);
+  assert.strictEqual(off.check(true).status, 'off');
+  assert.strictEqual(await off.install(), false);
+});
+
+test('自动更新：日志写到文件里，带时间，太长的截断；超过 1 MB 时旧的改名成 updater.old.log', () => {
+  const { fileLogger } = require('../electron/updater');
+  const dir = tmp();
+  const file = path.join(dir, 'logs', 'updater.log');
+  const log = fileLogger(file); // logs 文件夹不存在时自己建
+  log.info('Checking for update');
+  log.error(new Error('net::ERR_INTERNET_DISCONNECTED'));
+  log.warn('x'.repeat(5000));
+  const lines = fs.readFileSync(file, 'utf8').trimEnd().split('\n');
+  assert.match(lines[0], /^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d info  Checking for update$/);
+  assert.match(lines[1], /error Error: net::ERR_INTERNET_DISCONNECTED/);
+  assert.ok(lines.slice(1).join('\n').includes('warn  xxx') && lines[lines.length - 1].length < 4100); // 太长的截断
+  fs.writeFileSync(file, 'y'.repeat(1024 * 1024 + 1));
+  fileLogger(file).info('new');
+  assert.ok(fs.statSync(path.join(dir, 'logs', 'updater.old.log')).size > 1024 * 1024);
+  assert.match(fs.readFileSync(file, 'utf8'), /info  new\n$/);
+});
+
+test('打包配置：更新源是 GitHub 的 Lauk1z/nightshift，electron-updater 在 dependencies 里（会被打进安装包）', () => {
+  const pkg = require('../package.json');
+  assert.deepStrictEqual(pkg.build.publish, [{ provider: 'github', owner: 'Lauk1z', repo: 'nightshift' }]);
+  assert.ok(pkg.dependencies['electron-updater']);
+  assert.ok(pkg.build.win.target.includes('nsis'));
+  assert.match(pkg.scripts.dist, /--publish never/); // npm run dist 只打包，不上传
+});
+
 (async () => {
   let failed = 0;
   for (const t of tests) {

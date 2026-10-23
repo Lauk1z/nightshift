@@ -40,8 +40,8 @@
 
 | 檔案 | 用法 |
 | --- | --- |
-| `Nightshift-Setup-0.11.0.exe` | 安裝版。雙擊安裝，會在桌面和開始選單建快捷方式。推薦用這個。 |
-| `Nightshift-0.11.0-portable.exe` | 免安裝版。雙擊直接執行，可以放在 U 盤裡隨身帶。每次啟動要先解壓，會比安裝版慢幾秒。 |
+| `Nightshift-Setup-0.11.0.exe` | 安裝版。雙擊安裝，會在桌面和開始選單建快捷方式，以後會自動更新（見下一節）。推薦用這個。 |
+| `Nightshift-0.11.0-portable.exe` | 免安裝版。雙擊直接執行，可以放在 U 盤裡隨身帶。每次啟動要先解壓，會比安裝版慢幾秒；不會自動更新。 |
 
 程式沒有數字簽名，第一次執行時 Windows 可能提示「Windows 已保護你的電腦」。點「更多資訊」→「仍要執行」即可。
 
@@ -70,6 +70,22 @@
 - 模型清單也會重新讀取。
 
 換一臺電腦裝 Nightshift 也一樣：裝好 AI 工具後開啟 Nightshift，就能識別它們，並列出能選的模型和思考強度。那臺電腦上的 Claude Code 沒有自己的 `settings.json` 也沒關係，會列出 fable、opus、sonnet、haiku 這幾個通用別名。
+
+## 自動更新
+
+安裝版會自己更新，不用再去 Releases 下載：
+
+1. 每次啟動十幾秒後，Nightshift 在背景去 GitHub 看有沒有新版本；一直開著的話，每 6 小時再看一次。
+2. 有新版本就在背景下載，不影響手上的工作。
+3. 下載好了，左下角你的名字上面會出現「重啟以完成更新」（帳戶選單和 ☰ 選單裡也有）。方便的時候點一下：Nightshift 會關掉，在背景裝好新版本，然後自動重新開啟。還有 AI 成員在工作的話，會先問你。
+
+不點就不裝，平時關掉 Nightshift 也不會裝；下次啟動還會提示，已經下載好的不用重新下。
+
+- 想馬上查一次：帳戶選單裡的「檢查更新…」。「關於」裡能看到當前版本和更新的狀態。
+- 只有安裝版會自動更新。免安裝版、`start.bat` 網頁版和 `npm start` 都不檢查，新版本請到 [Releases](https://github.com/Lauk1z/nightshift/releases/latest) 下載。
+- 更新只替換程式檔案。專案、聊天記錄和設定在 `%APPDATA%\Agent Chat\data`，不會動。
+- 沒網、暫時連不上 GitHub、下載的檔案校驗不對，都不會彈窗打擾你，只記在日誌裡（`%APPDATA%\Agent Chat\logs\updater.log`），過一陣自動再試。「關於」裡會寫一句原因。
+- 0.11.0 和更早的版本還沒有自動更新，要手動下載安裝一次新版本，之後就會自動更新了。
 
 ## 工作原理
 
@@ -123,7 +139,7 @@
 
 | 位置 | 作用 |
 | --- | --- |
-| ☰ | 選單：新增專案、重新檢測 AI 工具、縮放、重新載入介面、開發者工具、關於 |
+| ☰ | 選單：新增專案、重新檢測 AI 工具、縮放、重新載入介面、開發者工具、檢查更新（安裝版）、關於 |
 | 側邊欄圖示 | 收起或展開左邊的專案清單（Ctrl+B） |
 | ← → | 在開啟過的會話之間上一頁、下一頁（Alt+← / Alt+→，滑鼠側鍵也行） |
 | 專案名 | 專案的操作：新增會話、專案設定、在檔案總管中開啟、複製資料夾路徑、刪除專案 |
@@ -145,6 +161,8 @@
 | 使用說明 | 就是這份說明 |
 | 重新檢測 AI 工具 | 重新找這台電腦上的 Claude Code、Codex、OpenCode |
 | 開啟 data 資料夾 | 專案、聊天記錄、設定和用量記錄都在裡面（exe 版） |
+| 檢查更新… | 安裝版才有：馬上查一次新版本，結果在「關於」裡。新版本下載好以後，這一項變成「重啟以完成更新」（見「自動更新」） |
+| 關於 | 版本號、更新的狀態、data 資料夾在哪 |
 
 - 名字不填就用這台電腦的使用者名稱。它顯示在左下角和「用量」頁裡。
 - 介面語言也是 AI 成員預設的回覆語言。你用別的語言跟它們說話時，它們會跟著換。新增專案時，成員的職責說明也按這個語言寫。
@@ -323,6 +341,7 @@ API 模型本身不會讀寫檔案，Nightshift 會給它一組只能在專案�
 - 側邊對話存在 `data/rooms/<會話id>/side.jsonl`，不會寫進專案資料夾裡的聊天記錄
 - 設定存在 `data/settings.json`，用量記錄存在 `data/usage.jsonl`（只有數字、模型名和成員名，沒有對話內容）
 - 內建終端機用你自己的權限執行，和你自己開啟的 PowerShell 一樣；關閉 Nightshift 時會一起關掉
+- 安裝版會連到 github.com 檢查、下載新版本（見「自動更新」）。請求裡沒有專案、聊天記錄或帳號資訊，只帶一個隨機編號（electron-updater 用來分批推送新版本，存在 `%APPDATA%\Agent Chat\.updaterId`）；下載的安裝包暫存在 `%LOCALAPPDATA%\agent-chat-updater`
 
 ## 常見問題
 
@@ -347,6 +366,9 @@ Nightshift 直接呼叫你電腦上的 `claude`、`codex`、`opencode`、`gemini
 **網頁版想換埠？**
 執行 `node server/index.js --port 4000 --open`。
 
+**自動更新一直沒動靜？**
+開啟「關於」看「更新」那一行，寫著現在的狀態或者沒成功的原因（沒聯網、GitHub 限流、最新的 Release 裡沒有 `latest.yml`……），詳細的記錄在 `%APPDATA%\Agent Chat\logs\updater.log`。免安裝版和網頁版不會自動更新。
+
 ## 開發和打包
 
 ```bash
@@ -369,13 +391,29 @@ npm test
 npm run dist
 ```
 
-重新打包，在 `dist/` 裡生成安裝版和免安裝版 exe。打包前會自動把終端機介面用的 xterm.js 複製到 `public/vendor/`（`npm run vendor`）。圖示由 `npm run icon` 生成（`scripts/make-icon.js`）。
+重新打包，在 `dist/` 裡生成安裝版和免安裝版 exe，還有自動更新要用的 `latest.yml` 和 `Nightshift-Setup-<版本>.exe.blockmap`。它只打包，不會上傳到 GitHub。打包前會自動把終端機介面用的 xterm.js 複製到 `public/vendor/`（`npm run vendor`）。圖示由 `npm run icon` 生成（`scripts/make-icon.js`）。
+
+發新版本：
+
+1. 改 `package.json` 裡的 `version`。自動更新按它判斷新舊，必須比上一個版本大（比如 0.11.0 → 0.12.0）。
+2. 執行 `npm run dist`。
+3. 在 GitHub 上新增 Release，標籤寫成 `v` 加版本號（比如 `v0.12.0`），把 `dist/` 裡這次生成的下面幾個檔案一起傳上去，然後直接釋出成正式版。自動更新只認最新的正式版（Latest），草稿和預釋出版（pre-release）都不算。
+
+| 檔案 | 用途 |
+| --- | --- |
+| `Nightshift-Setup-<版本>.exe` | 安裝版。自動更新下載的也是它 |
+| `latest.yml` | 已經裝好的 Nightshift 靠它知道最新的版本號、安裝包的檔名和校驗值。**漏傳它，大家就收不到這次更新**（「關於」裡會顯示「GitHub 上最新的版本還沒有提供自動更新」） |
+| `Nightshift-Setup-<版本>.exe.blockmap` | 增量更新用：下次更新時，裝著這個版本的電腦只下載和它不同的部分，不用整個重新下。漏傳也能更新，只是要下載整個安裝包（100 多 MB） |
+| `Nightshift-<版本>-portable.exe` | 免安裝版（可選） |
+
+`latest.yml` 和 `.blockmap` 每次都要傳這次 `npm run dist` 生成的那一份，不能拿舊的改。以前發版只傳了安裝包，所以 0.11.0 和更早的版本收不到自動更新，要手動裝一次新版本。
 
 內建終端機用的是 [@lydell/node-pty](https://www.npmjs.com/package/@lydell/node-pty)（自帶編譯好的檔案，不需要裝編譯工具）。
 
 ```
 electron/
   main.js           桌面版主程序：啟動服務、沉浸式標題欄、內嵌瀏覽器、選資料夾、通知、關閉前提醒
+  updater.js        自動更新（electron-updater，更新源是 GitHub Releases，只在安裝版裡檢查）
   preload.js        給介面開放的幾個原生功能
 server/
   index.js          HTTP 服務、介面、SSE 推送；start() 供桌面版呼叫
@@ -395,7 +433,7 @@ server/
 public/             介面（原生 JS，無構建步驟）
   app.js            主介面：標題欄、專案和會話、成員面板、群聊、輸入框
   panel.js          右側面板：檔案、側邊對話、終端機、瀏覽器
-  account.js        左下角的帳戶選單、設定、用量頁
+  account.js        左下角的帳戶選單、設定、用量頁、自動更新的提示
   i18n.js           介面語言：按簡體中文原文查詞典
   i18n/             詞典：en.json（手寫）、zh-Hant.json（由 scripts/i18n-hant.js 生成）
   vendor/xterm/     終端機介面（xterm.js，由 scripts/vendor.js 複製過來）

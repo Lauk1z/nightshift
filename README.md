@@ -40,8 +40,8 @@
 
 | 文件 | 用法 |
 | --- | --- |
-| `Nightshift-Setup-0.11.0.exe` | 安装版。双击安装，会在桌面和开始菜单建快捷方式。推荐用这个。 |
-| `Nightshift-0.11.0-portable.exe` | 免安装版。双击直接运行，可以放在 U 盘里随身带。每次启动要先解压，会比安装版慢几秒。 |
+| `Nightshift-Setup-0.11.0.exe` | 安装版。双击安装，会在桌面和开始菜单建快捷方式，以后会自动更新（见下一节）。推荐用这个。 |
+| `Nightshift-0.11.0-portable.exe` | 免安装版。双击直接运行，可以放在 U 盘里随身带。每次启动要先解压，会比安装版慢几秒；不会自动更新。 |
 
 程序没有数字签名，第一次运行时 Windows 可能提示「Windows 已保护你的电脑」。点「更多信息」→「仍要运行」即可。
 
@@ -70,6 +70,22 @@
 - 模型列表也会重新读取。
 
 换一台电脑装 Nightshift 也一样：装好 AI 工具后打开 Nightshift，就能识别它们，并列出能选的模型和思考强度。那台电脑上的 Claude Code 没有自己的 `settings.json` 也没关系，会列出 fable、opus、sonnet、haiku 这几个通用别名。
+
+## 自动更新
+
+安装版会自己更新，不用再去 Releases 下载：
+
+1. 每次启动十几秒后，Nightshift 在后台去 GitHub 看有没有新版本；一直开着的话，每 6 小时再看一次。
+2. 有新版本就在后台下载，不影响手上的工作。
+3. 下载好了，左下角你的名字上面会出现「重启以完成更新」（账户菜单和 ☰ 菜单里也有）。方便的时候点一下：Nightshift 会关掉，在后台装好新版本，然后自动重新打开。还有 AI 成员在工作的话，会先问你。
+
+不点就不装，平时关掉 Nightshift 也不会装；下次启动还会提示，已经下载好的不用重新下。
+
+- 想马上查一次：账户菜单里的「检查更新…」。「关于」里能看到当前版本和更新的状态。
+- 只有安装版会自动更新。免安装版、`start.bat` 网页版和 `npm start` 都不检查，新版本请到 [Releases](https://github.com/Lauk1z/nightshift/releases/latest) 下载。
+- 更新只替换程序文件。项目、聊天记录和设置在 `%APPDATA%\Agent Chat\data`，不会动。
+- 没网、暂时连不上 GitHub、下载的文件校验不对，都不会弹窗打扰你，只记在日志里（`%APPDATA%\Agent Chat\logs\updater.log`），过一阵自动再试。「关于」里会写一句原因。
+- 0.11.0 和更早的版本还没有自动更新，要手动下载安装一次新版本，之后就会自动更新了。
 
 ## 工作原理
 
@@ -123,7 +139,7 @@
 
 | 位置 | 作用 |
 | --- | --- |
-| ☰ | 菜单：新建项目、重新检测 AI 工具、缩放、重新加载界面、开发者工具、关于 |
+| ☰ | 菜单：新建项目、重新检测 AI 工具、缩放、重新加载界面、开发者工具、检查更新（安装版）、关于 |
 | 侧边栏图标 | 收起或展开左边的项目列表（Ctrl+B） |
 | ← → | 在打开过的会话之间后退、前进（Alt+← / Alt+→，鼠标侧键也行） |
 | 项目名 | 项目的操作：新建会话、项目设置、在文件管理器中打开、复制文件夹路径、删除项目 |
@@ -145,6 +161,8 @@
 | 使用说明 | 就是这份说明 |
 | 重新检测 AI 工具 | 重新找这台电脑上的 Claude Code、Codex、OpenCode |
 | 打开数据文件夹 | 项目、聊天记录、设置和用量记录都在里面（exe 版） |
+| 检查更新… | 安装版才有：马上查一次新版本，结果在「关于」里。新版本下载好以后，这一项变成「重启以完成更新」（见「自动更新」） |
+| 关于 | 版本号、更新的状态、数据文件夹在哪 |
 
 - 名字不填就用这台电脑的用户名。它显示在左下角和「用量」页里。
 - 界面语言也是 AI 成员默认的回复语言。你用别的语言跟它们说话时，它们会跟着换。新建项目时，成员的职责说明也按这个语言写。
@@ -323,6 +341,7 @@ API 模型本身不会读写文件，Nightshift 会给它一组只能在项目�
 - 侧边对话存在 `data/rooms/<会话id>/side.jsonl`，不会写进项目文件夹里的聊天记录
 - 设置存在 `data/settings.json`，用量记录存在 `data/usage.jsonl`（只有数字、模型名和成员名，没有对话内容）
 - 内置终端用你自己的权限运行，和你自己打开的 PowerShell 一样；关闭 Nightshift 时会一起关掉
+- 安装版会连到 github.com 检查、下载新版本（见「自动更新」）。请求里没有项目、聊天记录或账号信息，只带一个随机编号（electron-updater 用来分批推送新版本，存在 `%APPDATA%\Agent Chat\.updaterId`）；下载的安装包暂存在 `%LOCALAPPDATA%\agent-chat-updater`
 
 ## 常见问题
 
@@ -347,6 +366,9 @@ Nightshift 直接调用你电脑上的 `claude`、`codex`、`opencode`、`gemini
 **网页版想换端口？**
 运行 `node server/index.js --port 4000 --open`。
 
+**自动更新一直没动静？**
+打开「关于」看「更新」那一行，写着现在的状态或者没成功的原因（没联网、GitHub 限流、最新的 Release 里没有 `latest.yml`……），详细的记录在 `%APPDATA%\Agent Chat\logs\updater.log`。免安装版和网页版不会自动更新。
+
 ## 开发和打包
 
 ```bash
@@ -369,13 +391,29 @@ npm test
 npm run dist
 ```
 
-重新打包，在 `dist/` 里生成安装版和免安装版 exe。打包前会自动把终端界面用的 xterm.js 复制到 `public/vendor/`（`npm run vendor`）。图标由 `npm run icon` 生成（`scripts/make-icon.js`）。
+重新打包，在 `dist/` 里生成安装版和免安装版 exe，还有自动更新要用的 `latest.yml` 和 `Nightshift-Setup-<版本>.exe.blockmap`。它只打包，不会上传到 GitHub。打包前会自动把终端界面用的 xterm.js 复制到 `public/vendor/`（`npm run vendor`）。图标由 `npm run icon` 生成（`scripts/make-icon.js`）。
+
+发新版本：
+
+1. 改 `package.json` 里的 `version`。自动更新按它判断新旧，必须比上一个版本大（比如 0.11.0 → 0.12.0）。
+2. 运行 `npm run dist`。
+3. 在 GitHub 上新建 Release，标签写成 `v` 加版本号（比如 `v0.12.0`），把 `dist/` 里这次生成的下面几个文件一起传上去，然后直接发布成正式版。自动更新只认最新的正式版（Latest），草稿和预发布版（pre-release）都不算。
+
+| 文件 | 用途 |
+| --- | --- |
+| `Nightshift-Setup-<版本>.exe` | 安装版。自动更新下载的也是它 |
+| `latest.yml` | 已经装好的 Nightshift 靠它知道最新的版本号、安装包的文件名和校验值。**漏传它，大家就收不到这次更新**（「关于」里会显示「GitHub 上最新的版本还没有提供自动更新」） |
+| `Nightshift-Setup-<版本>.exe.blockmap` | 增量更新用：下次更新时，装着这个版本的电脑只下载和它不同的部分，不用整个重新下。漏传也能更新，只是要下载整个安装包（100 多 MB） |
+| `Nightshift-<版本>-portable.exe` | 免安装版（可选） |
+
+`latest.yml` 和 `.blockmap` 每次都要传这次 `npm run dist` 生成的那一份，不能拿旧的改。以前发版只传了安装包，所以 0.11.0 和更早的版本收不到自动更新，要手动装一次新版本。
 
 内置终端用的是 [@lydell/node-pty](https://www.npmjs.com/package/@lydell/node-pty)（自带编译好的文件，不需要装编译工具）。
 
 ```
 electron/
   main.js           桌面版主进程：启动服务、沉浸式标题栏、内嵌浏览器、选文件夹、通知、关闭前提醒
+  updater.js        自动更新（electron-updater，更新源是 GitHub Releases，只在安装版里检查）
   preload.js        给界面开放的几个原生功能
 server/
   index.js          HTTP 服务、接口、SSE 推送；start() 供桌面版调用
@@ -395,7 +433,7 @@ server/
 public/             界面（原生 JS，无构建步骤）
   app.js            主界面：标题栏、项目和会话、成员面板、群聊、输入框
   panel.js          右侧面板：文件、侧边对话、终端、浏览器
-  account.js        左下角的账户菜单、设置、用量页
+  account.js        左下角的账户菜单、设置、用量页、自动更新的提示
   i18n.js           界面语言：按简体中文原文查词典
   i18n/             词典：en.json（手写）、zh-Hant.json（由 scripts/i18n-hant.js 生成）
   vendor/xterm/     终端界面（xterm.js，由 scripts/vendor.js 复制过来）

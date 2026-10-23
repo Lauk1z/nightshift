@@ -1027,6 +1027,55 @@ body.sorting * {
 .menu .tool-pip {
   margin: 0 4px;
 }
+/* 安装版下载好新版本时，账户那一行上面的「重启以完成更新」（account.js） */
+.upd-cta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 32px;
+  margin: 3px 0 4px;
+  padding: 5px 10px;
+  border: 1px solid var(--rule);
+  border-radius: 9px;
+  background: var(--raised);
+  color: var(--ink);
+  font-size: 12.5px;
+  font-weight: 550;
+  text-align: left;
+  box-shadow: var(--shadow-sm);
+}
+.upd-cta:hover:not(:disabled) {
+  background: var(--hover);
+}
+.upd-cta:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+.upd-cta:disabled {
+  opacity: 0.7;
+  cursor: default;
+}
+.upd-cta svg {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  color: var(--accent);
+}
+.upd-cta span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.upd-cta small {
+  flex: none;
+  color: var(--graphite);
+  font-size: 12px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
 
 /* 头像：圆形，成员颜色 */
 .avatar {
@@ -3559,6 +3608,26 @@ details.more summary {
 }
 .about code {
   font: 12px var(--mono);
+}
+/* 「更新」那一行：状态，右边是检查更新 / 重启以完成更新；出错时下面一行小字写日志在哪 */
+.about-update {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+}
+.about-update .btn {
+  height: 24px;
+  padding: 0 9px;
+  font-size: 12px;
+}
+.about-update a {
+  color: var(--accent);
+}
+.about-update small {
+  flex-basis: 100%;
+  font-size: 12px;
+  color: var(--graphite);
 }
 
 /* 提示 */
