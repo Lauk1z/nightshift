@@ -1109,7 +1109,8 @@
   function workItem(it) {
     const cls = [it.k === 'note' ? 'note' : '', it.s === 'error' ? 'error' : '', it.s === 'running' ? 'running' : ''].join(' ');
     const verb = it.k === 'note' ? '' : `<span class="verb">${esc(VERB[it.k] || it.n || tr('工具'))}${it.s === 'error' ? tr('失败') : ''}</span>`;
-    return `<li class="${cls}">${ICONS[it.k] || ICONS.other}<div class="d">${verb}${esc(it.d || '')}</div></li>`;
+    const out = it.out ? `<span class="out-tag">${tr('项目外')}</span>` : ''; // 写到了项目文件夹以外（见 adapters/common.js 的 outside）
+    return `<li class="${cls}">${ICONS[it.k] || ICONS.other}<div class="d">${verb}${out}${esc(it.d || '')}</div></li>`;
   }
 
   function workNode(items, key) {
@@ -1155,6 +1156,24 @@
           .join(tr('、'))}${deleted.length > 5 ? tr(' 等') : ''}</p>`
       : '';
     return el(`<div class="files">${cards}${more}${del}</div>`);
+  }
+
+  // ---------- 交付核对：服务端按实际文件核对出来的（见 orchestrator.js 的 delivery） ----------
+  // 写到项目文件夹以外的文件：文件卡片里没有，醒目地提醒；能改文件的成员这一轮什么都没改：一行小字
+  function checkNode(m) {
+    const out = m.outside || [];
+    const warn = out.length
+      ? `<div class="deliver-out"><b>${esc(tr('有 {n} 个文件写到了项目文件夹以外', { n: out.length }))}</b>
+          <p>${esc(tr('它们不在文件卡片和文件面板里，其他成员默认也只在项目文件夹里找文件。'))}</p>
+          <ul>${out
+            .slice(0, 5)
+            .map((p) => `<li>${esc(p)}</li>`)
+            .join('')}</ul>${out.length > 5 ? `<p>${esc(tr('还有 {n} 个文件', { n: out.length - 5 }))}</p>` : ''}</div>`
+      : '';
+    const none = m.unchanged
+      ? `<p class="deliver-none" title="${esc(tr('依赖、构建产物和 . 开头的文件夹不在核对范围内'))}">${ICONS.info}<span>${esc(tr('这一轮没有改动项目文件夹里的文件'))}</span></p>`
+      : '';
+    return el(`<div class="deliver">${warn}${none}</div>`);
   }
 
   // 把 AI 写的各种路径（/E:/x/y.html、file://、绝对路径、带 :行号）变成项目里的相对路径
@@ -1371,6 +1390,7 @@
       body.append(el(`<div class="err"><b>${esc(tr('{name} 运行出错', { name }))}</b><pre>${esc(m.error || tr('未知错误'))}</pre></div>`));
     }
     if (m.files && m.files.length) body.append(filesNode(m));
+    if ((m.outside && m.outside.length) || m.unchanged) body.append(checkNode(m));
     if (m.items && m.items.length) body.append(workNode(m.items, m.id));
     const meta = [time];
     if (m.meta && m.meta.ms) meta.push(`<span>${tr('用时 {time}', { time: fmtDur(m.meta.ms) })}</span>`);
@@ -2460,7 +2480,7 @@
       <div class="field"><label for="pj-ws">${tr('项目文件夹')}</label>
         <div class="row"><input class="input mono grow" id="pj-ws" value="${esc(p.workspace)}"><button type="button" class="btn" data-browse>${tr('浏览…')}</button></div>
         <span class="hint">${tr('项目里的 {n} 个会话都在这个文件夹里工作。', { n: p.rooms.length })}</span>
-        <span class="hint warn" id="pj-ws-warn" hidden>${tr('换了文件夹以后，所有会话里的成员都会从头开始（重新读一遍聊天记录）。')}</span></div>
+        <span class="hint warn" id="pj-ws-warn" hidden>${tr('换了文件夹以后，所有会话里的成员都会从头开始（重新读一遍聊天记录），开着的终端也会关掉。')}</span></div>
       <div class="danger-zone"><div class="row"><button type="button" class="btn danger" data-delete>${tr('删除项目')}</button></div>
         <p class="hint" style="margin:8px 0 0">${tr('删除项目会删掉它里面所有会话的记录，不会动项目文件夹里的文件。')}</p></div>
     </form>`);

@@ -3,7 +3,7 @@
 // 第一行是会话头 {"type":"session","id":…}，下次用 --session <id> 续上。
 // pi 没有权限系统，权限靠 --tools 限定能用的工具：只读给 read,grep,find,ls；可改文件再加 edit,write；完全权限用默认工具（含 bash）。
 const { runJsonl, runCapture, killTree, detectCli, splitArgs } = require('../proc');
-const { rel, clip, tail, makeProbe, addUsage, readableError, segmenter } = require('./common');
+const { rel, outside, clip, tail, makeProbe, addUsage, readableError, segmenter } = require('./common');
 const { t: tr } = require('../i18n');
 
 const TOOLS = { readonly: 'read,grep,find,ls', edit: 'read,grep,find,ls,edit,write', full: '' };
@@ -40,7 +40,7 @@ function toolItem(j, cwd) {
   else if (k === 'cmd') d = i.command || '';
   else if (k === 'search') d = i.pattern || i.query || rel(i.path || '', cwd);
   else d = clip(JSON.stringify(i), 160);
-  return { id: j.toolCallId, k, n: j.toolName || 'tool', d: clip(d, 400), s: 'running' };
+  return { id: j.toolCallId, k, n: j.toolName || 'tool', d: clip(d, 400), s: 'running', ...outside(k, i.path || i.file_path, cwd) };
 }
 
 // 每条回复的 message 里有它自己的用量和模型（provider/model）

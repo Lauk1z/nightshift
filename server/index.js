@@ -442,6 +442,8 @@ function moveProject(project, ws) {
     store.saveRoom(room);
     bus.send('room', publicRoom(room));
   }
+  // 终端也属于项目：开着的都还停在旧文件夹里，容易在那儿找文件、跑测试，所以关掉（界面上会写明原因），新开的在新文件夹里
+  terms.killRoom(project.id, { reason: 'moved', to: ws });
 }
 
 route('PATCH', '/api/projects/:id', async (req, { params, body }) => {

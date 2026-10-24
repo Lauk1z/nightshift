@@ -19,6 +19,18 @@ function clip(s, n) {
   return s.length > n ? s.slice(0, n) + '…' : s;
 }
 
+// 交付核对：文件卡片只看得到项目文件夹里的改动，写到外面的文件从工具记录里找（用命令写的没法知道）；
+// 能改文件的成员这一轮什么都没改，也记下来。两样都显示在消息上，也写进给下一位成员的记录（见 prompt.js 的 renderMsg）
+function delivery({ items, changed, status, complete, canWrite }) {
+  const wrote = items.filter((it) => (it.k === 'write' || it.k === 'edit') && it.s !== 'error');
+  const out = [...new Set(wrote.flatMap((it) => it.out || []))];
+  const check = {};
+  if (out.length) check.outside = out.slice(0, 50);
+  // 依赖、构建产物和 . 开头的文件夹不进快照：工具记录里写了项目里的文件，就不说「没改」；快照被截断时也不下结论
+  if (status === 'done' && canWrite && complete && !changed.length && !wrote.some((it) => !it.out)) check.unchanged = true;
+  return check;
+}
+
 function statusFor(it) {
   const d = clip(it.d || '', 48);
   switch (it.k) {
@@ -240,7 +252,15 @@ class Orchestrator {
     }
 
     const status = stopped ? 'stopped' : res.error ? 'error' : 'done';
-    const changed = before ? files.diff(before, files.snapshot(room.workspace), room.workspace) : [];
+    const after = before ? files.snapshot(room.workspace) : null;
+    const changed = before ? files.diff(before, after, room.workspace) : [];
+    const check = delivery({
+      items: run.items,
+      changed,
+      status,
+      complete: !!before && !before.truncated && !after.truncated,
+      canWrite: agent.permission !== 'readonly',
+    });
     const msg = this.store.addMessage(roomId, {
       from: agent.id,
       name: agent.name,
@@ -252,6 +272,7 @@ class Orchestrator {
       error: status === 'error' ? clip(res.error, 3000) : undefined,
       items: items.slice(-300).map((it) => (it.k === 'note' ? { ...it, d: clip(it.d, 4000) } : it)),
       files: changed,
+      ...check,
       meta: { ms: Date.now() - run.startedAt, model: res.model || agent.model || '', effort: agent.effort || '' },
     });
     r.running = null;

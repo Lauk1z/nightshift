@@ -4,7 +4,7 @@
 // 权限：Hermes 没有只读的文件工具。只读时去掉命令行工具（-t file,web,todo,skills），并在提示开头要求它不改文件；
 // 可改文件用它的默认工具（危险命令没人批准就不会运行）；完全权限加 --yolo。
 const { runJsonl, runCapture, killTree, detectCli, splitArgs } = require('../proc');
-const { rel, clip, tail, makeProbe, addUsage, readableError, segmenter } = require('./common');
+const { rel, outside, clip, tail, makeProbe, addUsage, readableError, segmenter } = require('./common');
 const { t: tr } = require('../i18n');
 
 // result.tokens：{ input, output, total, cache_read, cache_write }。
@@ -66,7 +66,7 @@ function toolItem(j, id, cwd) {
   else if (k === 'web') d = i.url || i.query || (Array.isArray(i.urls) ? i.urls.join(', ') : '');
   else if (k === 'agent') d = i.goal || i.task || i.description || '';
   else d = clip(JSON.stringify(i), 160);
-  return { id, k, n: j.name || 'tool', d: clip(d, 400), s: 'running' };
+  return { id, k, n: j.name || 'tool', d: clip(d, 400), s: 'running', ...outside(k, i.path || i.file_path, cwd) };
 }
 
 module.exports = {

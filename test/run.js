@@ -46,6 +46,32 @@ test('简化 Codex 的 PowerShell 命令显示', () => {
   assert.strictEqual(prettyCmd('npm test'), 'npm test');
 });
 
+test('工具记录：写到项目文件夹以外的路径标出来，相对路径按项目文件夹算', () => {
+  const { rel, outside } = require('../server/adapters/common');
+  const root = path.resolve(tmp());
+  const fwd = (p) => p.replace(/\\/g, '/');
+  const home = path.join(os.homedir(), 'ai_team_test', 'calculator.py');
+  assert.deepStrictEqual(outside('write', 'ai_team_test/calculator.py', root), {});
+  assert.deepStrictEqual(outside('edit', path.join(root, 'docs', 'a.md'), root), {});
+  assert.deepStrictEqual(outside('write', '..notes.md', root), {}, '文件名以 .. 开头，还在项目里');
+  assert.deepStrictEqual(outside('read', home, root), {}, '读文件不算');
+  assert.deepStrictEqual(outside('write', home, root), { out: [fwd(home)] });
+  assert.deepStrictEqual(outside('edit', ['ok.py', '../x.py', ''], root), { out: [fwd(path.resolve(root, '..', 'x.py'))] });
+  assert.strictEqual(rel(path.join(root, 'docs', 'a.md'), root), 'docs/a.md');
+  assert.strictEqual(rel(home, root), fwd(home));
+  // Nightshift 自己的工作目录在项目里面时，相对路径也不会被多算一层
+  const sub = path.join(root, 'sub');
+  fs.mkdirSync(sub);
+  const cwd0 = process.cwd();
+  process.chdir(sub);
+  try {
+    assert.strictEqual(rel('a.py', root), 'a.py');
+    assert.deepStrictEqual(outside('write', 'a.py', root), {});
+  } finally {
+    process.chdir(cwd0);
+  }
+});
+
 test('额外参数支持引号', () => {
   assert.deepStrictEqual(splitArgs('--effort high -c model="o3" "a b"'), ['--effort', 'high', '-c', 'model=o3', 'a b']);
   assert.deepStrictEqual(splitArgs(`-c 'perm=["disk"]'`), ['-c', 'perm=["disk"]']);
@@ -80,6 +106,10 @@ test('首次提示词：协议 + 完整记录 + 轮到你', () => {
   assert.match(p, /这一轮改动的文件：docs\/design\.md/);
   assert.match(p, /GPT 在 #2 里 @ 了你/);
   assert.doesNotMatch(p, /系统提示不应该出现/);
+  // 协作规则：文件放在项目里，说做完之前先确认；括号里的核对结果以它为准
+  assert.match(p, /不要写到项目文件夹以外。说「做完了」之前先确认文件确实已经在项目文件夹里；说测试通过之前要真的运行过/);
+  assert.match(p, /是系统按实际文件核对出来的，和发言里说的对不上时以它为准/);
+  assert.match(p, /13\. 提到项目里的文件时/);
 });
 
 test('后续提示词：只有新消息，不含自己的发言', () => {
@@ -258,6 +288,67 @@ test('停止：正在执行的成员被中止，排队清空', async () => {
   const agentMsgs = store.messages(room.id).filter((m) => m.kind === 'agent');
   assert.strictEqual(agentMsgs.length, 1);
   assert.strictEqual(agentMsgs[0].status, 'stopped');
+});
+
+test('交付核对：写到项目外、什么都没改，记在消息上，下一位成员的记录里也写明', async () => {
+  const { rel, outside } = require('../server/adapters/common');
+  const dir = tmp();
+  const ws = path.join(dir, 'AgentChat', 'APP');
+  const far = path.join(dir, 'home', 'ai_team_test', 'calculator.py'); // 相当于 C:\Users\wangr\ai_team_test
+  fs.mkdirSync(ws, { recursive: true });
+  // 假成员按名字做事：Out 用编辑工具写到项目外；Talk 只说不做；Dev 用命令写在项目里；
+  // Dot 改了 . 开头的文件夹（不进快照）；Ro 只读；Bad 往项目外写但失败了。回复都说「做完了」
+  adapters.register({
+    id: 'fake-check',
+    label: 'Fake',
+    run({ agent, cwd, emit }) {
+      const write = (id, file, ok = true) => {
+        if (ok) {
+          fs.mkdirSync(path.dirname(file), { recursive: true });
+          fs.writeFileSync(file, 'x');
+        }
+        emit({ type: 'tool', item: { id, k: 'write', n: 'Write', d: rel(file, cwd), s: 'running', ...outside('write', file, cwd) } });
+        emit({ type: 'tool', item: { id, s: ok ? 'ok' : 'error' } });
+      };
+      if (agent.name === 'Out') write('w1', far);
+      if (agent.name === 'Dev') fs.writeFileSync(path.join(cwd, 'calc.py'), 'x');
+      if (agent.name === 'Dot') write('w2', path.join(cwd, '.github', 'ci.yml'));
+      if (agent.name === 'Bad') write('w3', path.join(dir, 'home', 'nope.py'), false);
+      return { done: Promise.resolve({ text: '已创建 ai_team_test/calculator.py，22 个测试全部通过' }), cancel() {} };
+    },
+  });
+  const store = new Store(path.join(dir, 'data'));
+  const orch = new Orchestrator(store, { send() {} });
+  const names = ['Out', 'Talk', 'Dev', 'Dot', 'Ro', 'Bad'];
+  const room = store.createRoom({
+    name: 't',
+    workspace: ws,
+    agents: names.map((n) => ({ id: n.toLowerCase(), name: n, adapter: 'fake-check', permission: n === 'Ro' ? 'readonly' : 'edit', enabled: true })),
+  });
+  orch.postUser(room.id, names.map((n) => '@' + n).join(' ') + ' 在 ai_team_test 里写一个计算器和测试');
+  await idle(orch, room.id);
+  const by = Object.fromEntries(store.messages(room.id).filter((m) => m.kind === 'agent').map((m) => [m.name, m]));
+  const farFwd = far.replace(/\\/g, '/');
+  assert.deepStrictEqual(names.map((n) => by[n].status), names.map(() => 'done'));
+  assert.deepStrictEqual([by.Out.outside, by.Out.unchanged], [[farFwd], true], '写到了项目外，项目里也什么都没改');
+  assert.deepStrictEqual(by.Out.items[0].out, [farFwd], '工作过程里那一步标着项目外');
+  assert.deepStrictEqual([by.Talk.outside, by.Talk.unchanged], [undefined, true]);
+  assert.deepStrictEqual([by.Dev.files.map((f) => f.path), by.Dev.unchanged], [['calc.py'], undefined]);
+  assert.deepStrictEqual([by.Dot.files, by.Dot.unchanged], [[], undefined], '. 开头的文件夹不进快照，但工具记录里写了项目里的文件，不算「没改」');
+  assert.strictEqual(by.Ro.unchanged, undefined, '只读成员不提示');
+  assert.deepStrictEqual([by.Bad.outside, by.Bad.unchanged], [undefined, true], '写失败的不算写到了项目外');
+  // 下一位成员（第一次发言，拿到完整记录）看到的
+  const rev = { id: 'rev', name: 'Rev', adapter: 'fake-check', enabled: true };
+  const p = buildCliPrompt({ room: { ...room, agents: [...room.agents, rev] }, agent: rev, messages: store.messages(room.id), fresh: true });
+  const part = (name) => p.slice(p.indexOf(`] ${name}：`)).split('\n\n')[0];
+  assert.ok(part('Out').includes(`（这一轮有文件写到了项目文件夹以外：${farFwd}）`), part('Out'));
+  assert.ok(part('Out').includes('（这一轮没有改动项目文件夹里的文件）'));
+  assert.doesNotMatch(part('Out'), /这一轮改动的文件/, '写到项目外的不算进「改动的文件」');
+  assert.match(part('Talk'), /已创建 ai_team_test\/calculator\.py，22 个测试全部通过\n（这一轮没有改动项目文件夹里的文件）$/);
+  assert.match(part('Dev'), /（这一轮改动的文件：calc\.py）$/);
+  assert.match(part('Dot'), /（这一轮改动的文件：\.github\/ci\.yml）$/);
+  assert.doesNotMatch(part('Ro'), /（这一轮/);
+  assert.doesNotMatch(part('Bad'), /写到了项目文件夹以外|这一轮改动的文件/);
 });
 
 // ---- API 模型：用一个模拟的 OpenAI 兼容接口测试工具调用 ----
@@ -705,6 +796,26 @@ test('终端：在项目文件夹里打开，输入命令能看到输出，输�
   assert.throws(() => terms.write(t.id, 'x'), /已经关闭/);
 });
 
+test('终端：换了项目文件夹时关掉旧终端，只通知界面一次，带上原因和新文件夹', async () => {
+  const { Terminals } = require('../server/terminal');
+  const ev = [];
+  const terms = new Terminals({ send: (event, data) => ev.push({ event, data }) });
+  if (!terms.available().ok) return console.log('    （这台电脑上终端组件不可用，跳过）');
+  const t = terms.create({ roomId: 'p1', cwd: tmp(), cols: 80, rows: 24 });
+  terms.create({ roomId: 'p2', cwd: tmp(), cols: 80, rows: 24 });
+  try {
+    await waitFor(() => terms.buffer(t.id).buffer.length > 0, 15000);
+    terms.killRoom('p1', { reason: 'moved', to: 'E:\\new' });
+    assert.deepStrictEqual(terms.forRoom('p1'), []);
+    assert.strictEqual(terms.forRoom('p2').length, 1, '别的项目的终端不动');
+    await new Promise((r) => setTimeout(r, 1500)); // 等进程真的退出：退出时不能再发一次
+    const exits = ev.filter((e) => e.event === 'term-exit' && e.data.id === t.id).map((e) => e.data);
+    assert.deepStrictEqual(exits, [{ id: t.id, roomId: 'p1', code: null, reason: 'moved', to: 'E:\\new' }]);
+  } finally {
+    terms.killAll();
+  }
+});
+
 test('项目和会话：旧数据按文件夹归进项目；只有一个会话时，会话用第一条消息起标题', () => {
   const { autoTitle } = require('../server/store');
   assert.strictEqual(autoTitle('@GPT @Claude 做一个待办清单网页\n要能离线用'), '做一个待办清单网页');
@@ -1041,13 +1152,20 @@ test('设置和用量接口；换了语言，服务端的报错和 boot.js 跟�
     assert.deepStrictEqual(await projectIds(), [made.project.id, other.id]);
     await call('DELETE', `/api/projects/${other.id}`);
     // 终端属于项目：从哪个会话打开都是同一组
-    assert.deepStrictEqual((await call('GET', `/api/term?room=${second.id}`)).json().terminals, []);
-    // 换文件夹：整个项目一起换
+    const termList = (await call('GET', `/api/term?room=${second.id}`)).json();
+    assert.deepStrictEqual(termList.terminals, []);
+    const t1 = termList.available ? (await call('POST', '/api/term', { roomId: rid, cols: 80, rows: 24 })).json() : null;
+    if (t1) assert.strictEqual(t1.cwd, ws);
+    // 换文件夹：整个项目一起换；开着的终端还在旧文件夹里，一起关掉，新开的在新文件夹里
     const ws2 = tmp();
     await call('PATCH', `/api/projects/${made.project.id}`, { workspace: ws2, name: '待办 App 2' });
     for (const id of [rid, second.id]) {
       const room = (await call('GET', `/api/rooms/${id}`)).json().room;
       assert.deepStrictEqual([room.workspace, room.projectName], [ws2, '待办 App 2']);
+    }
+    if (t1) {
+      assert.deepStrictEqual((await call('GET', `/api/term?room=${second.id}`)).json().terminals, []);
+      assert.strictEqual((await call('POST', '/api/term', { roomId: second.id, cols: 80, rows: 24 })).json().cwd, ws2);
     }
     // 删会话、删项目
     await call('DELETE', `/api/rooms/${second.id}`);
@@ -1380,6 +1498,76 @@ test('DeepSeek Harness：dsh headless --json，任务走 stdin；模型和思考
   assert.strictEqual(sessionOutdated({ adapter: 'dsh', name: 'A' }, { adapter: 'dsh', name: 'B' }), false);
   assert.strictEqual(sessionOutdated({ adapter: 'codex', model: 'a' }, { adapter: 'codex', model: 'b' }), false);
   assert.strictEqual(sessionOutdated({ adapter: 'codex' }, { adapter: 'dsh' }), true);
+});
+
+test('Codex：补丁写到项目文件夹以外时，工具记录里标出这些路径；删掉的不算', async () => {
+  const far = path.join(os.tmpdir(), 'agentchat-elsewhere', 'ai_team_test', 'calculator.py');
+  const gone = path.join(os.tmpdir(), 'agentchat-elsewhere', 'old.py');
+  const r = await runFake('codex', {
+    help: '  --json  Print events to stdout as JSONL',
+    lines: [
+      { type: 'thread.started', thread_id: 't-1' },
+      { type: 'item.completed', item: { id: 'p1', type: 'file_change', status: 'completed', changes: [{ path: 'inside.py', kind: 'add' }, { path: far, kind: 'add' }] } },
+      { type: 'item.completed', item: { id: 'p2', type: 'file_change', status: 'completed', changes: [{ path: 'docs/a.md', kind: 'update' }, { path: gone, kind: 'delete' }] } },
+      { type: 'item.completed', item: { id: 'm1', type: 'agent_message', text: '写好了' } },
+      { type: 'turn.completed', usage: { input_tokens: 1, output_tokens: 1 } },
+    ],
+  });
+  assert.strictEqual(r.res.error, null);
+  const [p1, p2] = tools(r.events);
+  assert.deepStrictEqual([p1.k, p1.out], ['write', [far.replace(/\\/g, '/')]]);
+  assert.deepStrictEqual([p2.k, p2.out], ['edit', undefined]);
+  assert.ok(r.calls[0].args.includes('-C') && r.calls[0].args[r.calls[0].args.indexOf('-C') + 1] === r.cwd, 'cwd 用 -C 传给 Codex');
+});
+
+test('交付核对（假的 codex 程序跑一整轮接力）：写到项目外、只说没做，消息上记下来，下一位成员也看得到', async () => {
+  const proc = require('../server/proc');
+  const dir = fakeCli('codex');
+  const keep = { PATH: process.env.PATH, FAKE_LOG: process.env.FAKE_LOG, FAKE_SCRIPT: process.env.FAKE_SCRIPT, FAKE_HELP: process.env.FAKE_HELP };
+  process.env.PATH = dir + path.delimiter + process.env.PATH;
+  process.env.FAKE_LOG = path.join(tmp(), 'calls.jsonl');
+  process.env.FAKE_HELP = '  --json  Print events to stdout as JSONL';
+  proc.clearCache();
+  const script = (...lines) => (process.env.FAKE_SCRIPT = JSON.stringify({ lines: lines.map((l) => JSON.stringify(l)) }));
+  const far = path.join(tmp(), 'home', 'ai_team_test', 'calculator.py'); // 相当于 C:\Users\wangr\ai_team_test
+  const start = { type: 'thread.started', thread_id: 't-1' };
+  const claim = { type: 'item.completed', item: { id: 'm1', type: 'agent_message', text: '已创建 ai_team_test/calculator.py，22 个测试全部通过' } };
+  const end = { type: 'turn.completed', usage: { input_tokens: 1, output_tokens: 1 } };
+  try {
+    const ws = tmp();
+    const store = new Store(path.join(tmp(), 'data'));
+    const orch = new Orchestrator(store, { send() {} });
+    const room = store.createRoom({ name: 't', workspace: ws, agents: [{ id: 'g', name: 'GPT', adapter: 'codex', permission: 'edit', enabled: true }] });
+    // 第一轮：补丁写到了项目外
+    script(start, { type: 'item.completed', item: { id: 'p1', type: 'file_change', status: 'completed', changes: [{ path: far, kind: 'add' }] } }, claim, end);
+    orch.postUser(room.id, '@GPT 在 ai_team_test 里写计算器和测试');
+    await idle(orch, room.id);
+    // 第二轮：只说没做
+    script(start, claim, end);
+    orch.postUser(room.id, '@GPT 项目里没有这些文件，再写一次');
+    await idle(orch, room.id);
+    const [out, talk] = store.messages(room.id).filter((m) => m.kind === 'agent');
+    const farFwd = far.replace(/\\/g, '/');
+    assert.deepStrictEqual([out.status, out.outside, out.unchanged, out.files], ['done', [farFwd], true, []]);
+    assert.deepStrictEqual(out.items.map((it) => [it.k, it.out]), [['write', [farFwd]]]);
+    assert.deepStrictEqual([talk.status, talk.outside, talk.unchanged, talk.files, talk.items], ['done', undefined, true, [], []]);
+    // 下一位成员（第一次发言，拿到完整记录）看到的
+    const rev = { id: 'rev', name: 'Rev', adapter: 'codex', enabled: true };
+    const p = buildCliPrompt({ room: { ...room, agents: [...room.agents, rev] }, agent: rev, messages: store.messages(room.id), fresh: true });
+    const part = (seq) => p.slice(p.indexOf(`[#${seq}] `)).split('\n\n')[0];
+    assert.ok(part(out.seq).includes(`（这一轮有文件写到了项目文件夹以外：${farFwd}）`), part(out.seq));
+    assert.match(part(talk.seq), /22 个测试全部通过\n（这一轮没有改动项目文件夹里的文件）$/);
+    // 两轮都在项目文件夹里启动（-C 和 cwd 都是它），第二轮续上第一轮的会话
+    const calls = fs.readFileSync(process.env.FAKE_LOG, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    assert.deepStrictEqual(calls.map((c) => c.args[c.args.indexOf('-C') + 1]), [ws, ws]);
+    assert.deepStrictEqual(calls[1].args.slice(-3), ['resume', 't-1', '-']);
+  } finally {
+    for (const [k, v] of Object.entries(keep)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    proc.clearCache();
+  }
 });
 
 test('模型目录：pi 的模型表、grok models 的输出、Hermes 和 Grok 设置里的默认模型、Gemini 的别名', () => {

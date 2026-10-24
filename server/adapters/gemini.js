@@ -3,7 +3,7 @@
 // 第一条 init 里有 session_id，下次用 --resume <id> 续上。
 // 权限对应 --approval-mode：default（无人值守时要确认的工具一律不能用，等于只读）/ auto_edit（自动批准改文件）/ yolo。
 const { runJsonl, runCapture, killTree, detectCli, splitArgs } = require('../proc');
-const { rel, clip, tail, makeProbe, addUsage, readableError, segmenter } = require('./common');
+const { rel, outside, clip, tail, makeProbe, addUsage, readableError, segmenter } = require('./common');
 const { t: tr } = require('../i18n');
 
 // result.stats.models 里每个模型一份：input_tokens 含命中缓存的部分，cached + input 是它的拆分
@@ -77,7 +77,7 @@ function toolItem(j, cwd) {
   else if (k === 'web') d = i.url || i.query || i.prompt || '';
   else if (k === 'agent') d = i.objective || i.task || i.description || '';
   else d = clip(JSON.stringify(i), 160);
-  return { id: j.tool_id, k, n: j.tool_name, d: clip(d, 400), s: 'running' };
+  return { id: j.tool_id, k, n: j.tool_name, d: clip(d, 400), s: 'running', ...outside(k, i.file_path || i.absolute_path || i.path || i.paths, cwd) };
 }
 
 module.exports = {

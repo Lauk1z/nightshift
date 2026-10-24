@@ -10,7 +10,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { runJsonl, runCapture, killTree, detectCli, splitArgs } = require('../proc');
-const { rel, clip, tail, makeProbe, addUsage, readableError, segmenter } = require('./common');
+const { rel, outside, clip, tail, makeProbe, addUsage, readableError, segmenter } = require('./common');
 const { t: tr } = require('../i18n');
 
 // 只读 / 可改文件 / 完全权限，对应 dsh 的三种文件沙箱
@@ -87,7 +87,7 @@ function toolItem(j, cwd) {
   else if (k === 'web') d = i.query || i.url || '';
   else if (k === 'agent') d = i.description || i.prompt || i.task || '';
   else d = clip(JSON.stringify(i), 160);
-  return { id: j.callId, k, n: j.tool || 'tool', d: clip(String(d), 400), s: 'running' };
+  return { id: j.callId, k, n: j.tool || 'tool', d: clip(String(d), 400), s: 'running', ...outside(k, i.file_path || i.path, cwd) };
 }
 
 // step_end 带的用量：inputTokens 不含缓存，缓存另算（和 Anthropic 的接口一样）

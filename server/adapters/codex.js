@@ -1,7 +1,7 @@
 'use strict';
 // OpenAI Codex：codex exec --json，prompt 走 stdin（参数 "-"），用 codex exec resume <id> 续上会话。
 const { runJsonl, runCapture, killTree, detectCli, splitArgs } = require('../proc');
-const { rel, clip, prettyCmd, tail, makeProbe, addUsage } = require('./common');
+const { rel, outside, clip, prettyCmd, tail, makeProbe, addUsage } = require('./common');
 const { t: tr } = require('../i18n');
 
 // 用量在 turn.completed 里：cached_input_tokens 是 input_tokens 里命中缓存的那部分
@@ -111,7 +111,9 @@ module.exports = {
                 .map((c) => rel(c.path, cwd) + (c.kind === 'add' ? tr('（新建）') : c.kind === 'delete' ? tr('（删除）') : ''))
                 .join(tr('、'));
               const allNew = changes.length && changes.every((c) => c.kind === 'add');
-              emit({ type: 'tool', item: { id: it.id, k: allNew ? 'write' : 'edit', n: 'patch', d: clip(d, 400), s: STATUS(it) } });
+              const k = allNew ? 'write' : 'edit';
+              const written = changes.filter((c) => c.kind !== 'delete').map((c) => c.path);
+              emit({ type: 'tool', item: { id: it.id, k, n: 'patch', d: clip(d, 400), s: STATUS(it), ...outside(k, written, cwd) } });
               break;
             }
             case 'mcp_tool_call':

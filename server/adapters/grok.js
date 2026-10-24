@@ -7,7 +7,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { runJsonl, runCapture, killTree, detectCli, splitArgs } = require('../proc');
-const { rel, clip, tail, makeProbe, addUsage, readableError, segmenter } = require('./common');
+const { rel, outside, clip, tail, makeProbe, addUsage, readableError, segmenter } = require('./common');
 const { t: tr } = require('../i18n');
 
 // end 里的用量：modelUsage 按模型分好，inputTokens 不含命中缓存的部分；没有分模型时用 usage 合计
@@ -86,7 +86,7 @@ function toolItem(j, cwd) {
   else if (k === 'search') d = i.pattern || i.query || i.regex || rel(i.path || loc || '', cwd);
   else if (k === 'web') d = i.url || i.query || '';
   if (!d) d = j.title || clip(JSON.stringify(i), 160);
-  return { id: j.toolCallId, k, n: name || j.title || 'tool', d: clip(d, 400), s: STATUS(j.status) };
+  return { id: j.toolCallId, k, n: name || j.title || 'tool', d: clip(d, 400), s: STATUS(j.status), ...outside(k, i.path || i.file_path || i.target_file || loc, cwd) };
 }
 
 module.exports = {

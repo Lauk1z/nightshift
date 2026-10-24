@@ -1743,6 +1743,59 @@ body.sorting * {
   color: var(--faint);
 }
 
+/* 交付核对：写到项目文件夹以外的文件（醒目），这一轮没有改动项目里的文件（小字） */
+.deliver {
+  display: grid;
+  gap: 6px;
+  max-width: 600px;
+  margin-top: 10px;
+}
+.deliver-out {
+  display: grid;
+  gap: 2px;
+  padding: 10px 14px;
+  border: 1px solid var(--amber-line);
+  border-radius: 12px;
+  background: var(--amber-bg);
+  font-size: 13px;
+}
+.deliver-out b {
+  color: var(--amber);
+  font-weight: 600;
+}
+.deliver-out p {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--graphite);
+}
+.deliver-out ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  font: 12px/1.6 var(--mono);
+  overflow-wrap: anywhere;
+}
+.deliver-none {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 12px;
+  color: var(--faint);
+}
+.deliver-none svg {
+  flex: none;
+  width: 13px;
+  height: 13px;
+}
+.work-list .out-tag {
+  margin-right: 6px;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--amber-bg);
+  color: var(--amber);
+  font: 11px/1.6 var(--sans);
+}
+
 /* ---------- 空项目：居中的问候 ---------- */
 .transcript-empty {
   display: grid;

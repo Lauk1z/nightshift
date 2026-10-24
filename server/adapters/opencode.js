@@ -2,7 +2,7 @@
 // OpenCode：opencode run --format json，prompt 走 stdin，用 --session <id> 续上会话。
 // OpenCode 自己能接 DeepSeek / Kimi / Ollama 等很多模型，模型写成 provider/model。
 const { runJsonl, runCapture, killTree, detectCli, splitArgs } = require('../proc');
-const { rel, clip, tail, makeProbe, addUsage } = require('./common');
+const { rel, outside, clip, tail, makeProbe, addUsage } = require('./common');
 const { t: tr } = require('../i18n');
 
 // OpenCode 的 JSON 输出里没有 token 用量。跑完以后用 opencode api 读一下这个会话的消息，
@@ -85,7 +85,7 @@ function toolItem(p, cwd) {
   else if (k === 'agent') d = i.description || '';
   else d = clip(JSON.stringify(i), 160);
   const s = st.status === 'completed' ? 'ok' : st.status === 'error' ? 'error' : 'running';
-  return { id: p.callID || p.id, k, n: p.tool, d: clip(d, 400), s };
+  return { id: p.callID || p.id, k, n: p.tool, d: clip(d, 400), s, ...outside(k, i.filePath || i.path || i.file, cwd) };
 }
 
 function buildArgs({ agent, sessionId, caps = {} }) {

@@ -100,7 +100,7 @@ class Terminals {
       this.flush(t);
       t.exited = true;
       t.code = exitCode;
-      this.bus.send('term-exit', { id: t.id, roomId: t.roomId, code: exitCode });
+      if (!t.told) this.bus.send('term-exit', { id: t.id, roomId: t.roomId, code: exitCode });
     });
     this.list.set(t.id, t);
     return this.info(t);
@@ -153,20 +153,24 @@ class Terminals {
     return this.info(t);
   }
 
-  kill(id) {
+  // why：告诉界面为什么关（比如换了项目文件夹：{ reason: 'moved', to: 新文件夹 }）。马上通知，进程退出时就不再另外通知
+  kill(id, why) {
     const t = this.list.get(id);
     if (!t) return;
     this.list.delete(id);
     clearTimeout(t.timer);
-    if (!t.exited) {
-      try {
-        t.proc.kill();
-      } catch {}
+    if (t.exited) return;
+    if (why) {
+      t.told = true;
+      this.bus.send('term-exit', { id: t.id, roomId: t.roomId, code: null, ...why });
     }
+    try {
+      t.proc.kill();
+    } catch {}
   }
 
-  killRoom(roomId) {
-    for (const t of [...this.list.values()]) if (t.roomId === roomId) this.kill(t.id);
+  killRoom(roomId, why) {
+    for (const t of [...this.list.values()]) if (t.roomId === roomId) this.kill(t.id, why);
   }
 
   killAll() {

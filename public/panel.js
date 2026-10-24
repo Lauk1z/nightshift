@@ -1035,9 +1035,9 @@ window.createPanel = function createPanel(ctx) {
       $('#tTabs').innerHTML = list
         .map(
           (c) =>
-            `<button type="button" role="tab" class="term-tab${c.exited ? ' exited' : ''}" data-t-tab="${c.id}" aria-selected="${c === cur}" title="${esc(c.shell || '')}${
-              c.exited ? tr('（已结束）') : ''
-            }">${ICONS.terminal}<span>${esc(c.title)}</span><span class="x" data-t-close="${c.id}" title="${tr('关闭')}" aria-label="${tr('关闭')}">${ICONS.close}</span></button>`
+            `<button type="button" role="tab" class="term-tab${c.exited ? ' exited' : ''}" data-t-tab="${c.id}" aria-selected="${c === cur}" title="${esc(
+              [c.shell, c.cwd].filter(Boolean).join(' · ') // 鼠标移上去能看到终端开在哪个文件夹
+            )}${c.exited ? tr('（已结束）') : ''}">${ICONS.terminal}<span>${esc(c.title)}</span><span class="x" data-t-close="${c.id}" title="${tr('关闭')}" aria-label="${tr('关闭')}">${ICONS.close}</span></button>`
         )
         .join('');
       view('term').querySelector('[data-t="kill"]').disabled = !cur;
@@ -1212,8 +1212,14 @@ window.createPanel = function createPanel(ctx) {
       if (c.roomId === scope()) render();
     }
 
-    function exitNote(c, code) {
-      const note = code != null ? tr('进程已结束，退出码 {code}。点右上角的 + 再开一个终端', { code }) : tr('进程已结束。点右上角的 + 再开一个终端');
+    // ev：服务端的 term-exit 事件。换了项目文件夹时服务端会关掉旧终端（reason: 'moved'），写明原因
+    function exitNote(c, code, ev = {}) {
+      const note =
+        ev.reason === 'moved'
+          ? tr('项目文件夹换成了 {path}，这个终端还在原来的文件夹，已经关掉。点右上角的 + 在新文件夹里打开终端', { path: ev.to || '' })
+          : code != null
+            ? tr('进程已结束，退出码 {code}。点右上角的 + 再开一个终端', { code })
+            : tr('进程已结束。点右上角的 + 再开一个终端');
       c.term.write(`\r\n\x1b[90m[${note}]\x1b[0m\r\n`);
     }
 
@@ -1267,7 +1273,7 @@ window.createPanel = function createPanel(ctx) {
         }
       } else if (name === 'term-exit') {
         c.exited = true;
-        exitNote(c, ev.code);
+        exitNote(c, ev.code, ev);
         if (c.roomId === scope()) renderTabs();
       }
     }

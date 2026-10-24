@@ -6,7 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 const { killTree, childEnv, IS_WIN } = require('../proc');
-const { rel, clip, addUsage } = require('./common');
+const { rel, outside, clip, addUsage } = require('./common');
 // 给用户看的（状态、报错）跟着界面语言；工具说明和工具结果是给模型看的，保持中文
 const { t: tr } = require('../i18n');
 
@@ -183,7 +183,8 @@ function toolItem(id, name, args, cwd) {
   const map = { list_files: 'search', read_file: 'read', write_file: 'write', edit_file: 'edit', run_command: 'cmd' };
   const k = map[name] || 'other';
   const d = k === 'cmd' ? args.command || '' : rel(safeRel(cwd, args.path || '.'), cwd);
-  return { id, k, n: name, d: clip(d, 400), s: 'running' };
+  // 写到项目外会被 safePath 拦下（这一步显示为失败），这里只是标出来
+  return { id, k, n: name, d: clip(d, 400), s: 'running', ...outside(k, args.path, cwd) };
 }
 
 function safeRel(cwd, p) {

@@ -10,15 +10,32 @@ const path = require('path');
 //   { type: 'tool', item }             工具调用，按 item.id 更新：{ id, k, n, d, s }
 //        k: read | write | edit | cmd | search | web | agent | todo | other
 //        s: running | ok | error
+//        out: 写到项目文件夹以外的路径（见 outside），只有写 / 改文件时才可能有
 
+// 相对路径按项目文件夹算（不是按 Nightshift 自己的工作目录）
 function rel(p, cwd) {
   if (!p) return '';
   const s = String(p);
   try {
-    const r = path.relative(cwd, s);
+    const r = path.relative(cwd, path.resolve(cwd, s));
     if (r && !r.startsWith('..') && !path.isAbsolute(r)) return r.replace(/\\/g, '/');
   } catch {}
   return s.replace(/\\/g, '/');
+}
+
+// 写 / 改文件的目标在项目文件夹以外时，返回 { out: [这些路径] }（/ 分隔的绝对路径），否则返回 {}，可以直接展开进工具记录。
+// 文件卡片只看得到项目文件夹里的改动，写到外面的要靠它在一轮结束时提醒（见 orchestrator.js）
+function outside(k, paths, cwd) {
+  if ((k !== 'write' && k !== 'edit') || !cwd) return {};
+  const root = path.resolve(cwd);
+  const out = [];
+  for (const p of [].concat(paths || [])) {
+    if (!p || typeof p !== 'string') continue;
+    const full = path.resolve(root, p);
+    const r = path.relative(root, full);
+    if (path.isAbsolute(r) || /^\.\.([\\/]|$)/.test(r)) out.push(full.replace(/\\/g, '/'));
+  }
+  return out.length ? { out } : {};
 }
 
 function clip(s, n) {
@@ -123,4 +140,4 @@ function segmenter(emit) {
 const RESUME_FAIL =
   /no conversation found|session.{0,40}not found|could not find session|couldn't find session|no session (found|matching|with)|session.{0,40}(does not|doesn't) exist|no rollout found|thread.{0,40}not found|unknown session|failed to resume|cannot resume|invalid session|omit --session-id/i;
 
-module.exports = { rel, clip, prettyCmd, tail, optionBlock, makeProbe, addUsage, readableError, segmenter, RESUME_FAIL };
+module.exports = { rel, outside, clip, prettyCmd, tail, optionBlock, makeProbe, addUsage, readableError, segmenter, RESUME_FAIL };

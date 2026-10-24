@@ -116,7 +116,7 @@ A project is a folder, and a chat is a group chat that works in that folder. To 
 - **New chat**: hover over a project in the sidebar and click +, or use "New chat" in the chat name ▾ menu in the title bar, then name the chat and pick its members in the dialog. By default it copies the members of the chat you're in, with the same models, thinking effort and permissions; you can also pick a team such as "Design + development", or "Blank". You can change them afterwards without affecting the original chat.
 - **Chat names**: if you leave the name blank, the chat starts out as "New chat" and is named after your first message. To rename it, use "Rename chat…" in the chat name ▾ menu.
 - **What's shared**: chats in the same project share the project folder and the terminals. History, members, side chat, the default recipient and the auto-relay limit belong to each chat.
-- **Changing the folder**: do it in project settings. Every chat in the project moves with it, and members start fresh by rereading the chat history.
+- **Changing the folder**: do it in project settings. Every chat in the project moves with it, and members start fresh by rereading the chat history. Open terminals are still in the old folder, so they're closed too; new terminals open in the new folder.
 - **Chat actions**: right-click a chat in the sidebar, or hover over it and click ⋯ on the right: pin or unpin, rename, chat settings, new chat with the same members, delete. Right-clicking a project shows the project's actions.
 - **Pinning**: pinned chats stay at the top of their project, with a pin on the left.
 - **Sorting**: drag a project or chat to where you want it and let go; press Esc while dragging to cancel. Chats are sorted within their own project, and pinned and unpinned chats are sorted separately. From the keyboard, press Alt+↑ / Alt+↓ on a focused project or chat to move it one place. New projects and chats go at the top.
@@ -220,6 +220,7 @@ A real terminal (PowerShell on Windows, or PowerShell 7 if it's installed) that 
 
 - Ctrl+C copies when text is selected and interrupts the running program otherwise. Ctrl+V pastes; right-click for copy, paste and clear screen.
 - URLs printed in the terminal are clickable and open in the Browser page.
+- Hover over a terminal's tab to see which folder it's open in.
 - Ctrl+` opens or closes the terminal.
 
 **Browser**
@@ -270,6 +271,12 @@ When a member creates or edits files in a turn, file cards appear at the bottom 
 - Web page previews run in a sandbox, so scripts in the page can't control Nightshift.
 
 Dependencies and build output (`node_modules`, `dist`, `build` and so on) and folders starting with `.` never show up as cards.
+
+**When a member says it's done but the files aren't in the project**: Nightshift checks at the end of every turn. The result appears at the bottom of the message and is added to the chat history the next member reads, so teammates don't take "done" at face value.
+
+- Files written outside the project folder with an editing tool: the message warns "N files were written outside the project folder" and lists their paths, and the matching step in the work log is tagged "outside project". Files written outside by a command can't be detected.
+- A member that can change files didn't change any this turn: a small line says "No files in the project folder were changed this turn". Read-only members don't get this line.
+- The collaboration rules also tell members to keep every file in the project folder, to check that the files really exist before saying they're done, and to only say tests pass after actually running them.
 
 ## Choosing each member's model and thinking effort
 

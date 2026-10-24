@@ -5,7 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { runJsonl, runCapture, killTree, detectCli, splitArgs } = require('../proc');
-const { rel, clip, tail, optionBlock, makeProbe, addUsage } = require('./common');
+const { rel, outside, clip, tail, optionBlock, makeProbe, addUsage } = require('./common');
 const { t: tr } = require('../i18n');
 
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
@@ -110,7 +110,7 @@ function toolItem(b, cwd) {
   else if (/^(Task|Agent)$/.test(n)) (k = 'agent'), (d = i.description || '');
   else if (/^Todo/.test(n)) (k = 'todo'), (d = Array.isArray(i.todos) ? tr('{n} 项待办', { n: i.todos.length }) : '');
   else d = clip(JSON.stringify(i), 160);
-  return { id: b.id, k, n, d: clip(d, 400), s: 'running' };
+  return { id: b.id, k, n, d: clip(d, 400), s: 'running', ...outside(k, i.file_path || i.notebook_path, cwd) };
 }
 
 module.exports = {
