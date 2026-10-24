@@ -40,8 +40,8 @@ Download the installer from the [Releases](https://github.com/Lauk1z/nightshift/
 
 | File | How to use it |
 | --- | --- |
-| `Nightshift-Setup-0.11.0.exe` | Installer. Double-click to install; it adds shortcuts to the desktop and Start menu, and it updates itself from then on (see the next section). Recommended. |
-| `Nightshift-0.11.0-portable.exe` | Portable. Double-click to run, no install, so it can live on a USB stick. It unpacks itself on every start, so it opens a few seconds slower, and it doesn't update itself. |
+| `Nightshift-Setup-0.12.0.exe` | Installer. Double-click to install; it adds shortcuts to the desktop and Start menu, and it updates itself from then on (see the next section). Recommended. |
+| `Nightshift-0.12.0-portable.exe` | Portable. Double-click to run, no install, so it can live on a USB stick. It unpacks itself on every start, so it opens a few seconds slower, and it doesn't update itself. |
 
 The programs aren't code-signed, so on first run Windows may say "Windows protected your PC". Click "More info", then "Run anyway".
 
