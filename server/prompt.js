@@ -1,6 +1,7 @@
 'use strict';
 // 协作协议与提示词：告诉每个 AI 它是谁、队友是谁、怎么用 @ 交接；
 // 以及把群聊记录整理成它能读懂的形式。
+const { promptSection, promptText } = require('./acceptance');
 
 const USER_ALIASES = ['用户', 'user', 'human', '人类'];
 const ALL_ALIASES = ['所有人', '全体成员', '全体', 'all', 'everyone'];
@@ -79,7 +80,7 @@ function protocol(room, agent, logPath) {
     '1. 每次轮到你，你会收到自你上次发言以来群里的新消息。只做属于你职责的这一步，做完就交接。',
     '2. 你这一轮的「最终回复」会作为你的发言发到群里。队友看不到你的中间过程，所以最终回复要写清楚：做了什么、改了哪些文件、还有什么问题。',
     '3. 文件都放在共享的项目文件夹里，用相对路径创建和修改，不要写到项目文件夹以外。说「做完了」之前先确认文件确实已经在项目文件夹里；说测试通过之前要真的运行过，没运行就写明没运行。',
-    '4. 每条发言后面括号里的「这一轮改动的文件」「这一轮没有改动项目文件夹里的文件」「这一轮有文件写到了项目文件夹以外」是系统按实际文件核对出来的，和发言里说的对不上时以它为准。',
+    '4. 每条发言后面括号里的「这一轮改动的文件」「这一轮没有改动项目文件夹里的文件」「这一轮有文件写到了项目文件夹以外」「交付验收清单」是系统按实际文件核对出来的，和发言里说的对不上时以它为准。',
     `5. 需要队友接着做或回答问题时，在最终回复里 @ 对方的名字，例如「@${example} 请根据 docs/design.md 实现首页」。只有被 @ 的成员会被唤醒；可以一次 @ 多人，会按顺序轮流执行。`,
     '6. 需要用户拍板、提供信息或验收时，@用户，然后停下来等。',
     '7. 你这一步做完、也不需要任何人接着做时，不要 @ 任何人，接力会自然结束。',
@@ -119,6 +120,7 @@ function renderMsg(m, selfId, perMsg = 12000) {
   const out = Array.isArray(m.outside) ? m.outside : [];
   if (out.length) text += `\n（这一轮有文件写到了项目文件夹以外：${out.slice(0, 10).join('、')}${out.length > 10 ? ' 等' : ''}）`;
   if (m.unchanged) text += '\n（这一轮没有改动项目文件夹里的文件）';
+  if (m.acceptance) text += '\n' + promptText(m.acceptance);
   return `[#${m.seq}] ${who}：\n${text || '（无内容）'}`;
 }
 
@@ -149,6 +151,8 @@ function turnInstruction(room, agent, trigger) {
     .join(' ');
   const why = trigger && trigger.byName ? `${trigger.byName === '用户' ? '用户' : trigger.byName} 在 #${trigger.seq} 里 @ 了你。` : '';
   return [
+    // 打开了交付验收清单的会话：每一轮都附上，中途才打开的、有会话记忆的成员也能看到
+    ...(room.settings && room.settings.acceptance ? [promptSection(), ''] : []),
     '---',
     `现在轮到你（${agent.name}${agent.role ? '，' + agent.role : ''}）。${why}`,
     `完成你这一步，最终回复会发到群里。需要队友接手就 @ 名字（${names || '目前没有其他成员'}），需要用户决定就 @用户，不需要任何人行动就不要 @。`,
@@ -169,6 +173,10 @@ function buildCliPrompt({ room, agent, messages, fresh, trigger, logPath, skillT
     const since = (room.lastSeen && room.lastSeen[agent.id]) || 0;
     const delta = msgs.filter((m) => m.seq > since && m.from !== agent.id);
     parts.push('## 群聊新消息（自你上次发言以来）\n\n' + (delta.length ? transcript(delta, agent.id, 60000, logPath) : '（没有新消息）'));
+    // 自己的发言不再重复给，但交付后系统核对的结果（和用户点的通过 / 不通过）它还没看过
+    for (const m of msgs.filter((x) => x.seq > since && x.from === agent.id && x.acceptance)) {
+      parts.push(`## 你在 #${m.seq} 交付以后\n\n${promptText(m.acceptance)}`);
+    }
   }
   if (skillText) parts.push(skillText);
   parts.push(turnInstruction(room, agent, trigger));
@@ -187,8 +195,10 @@ function buildApiMessages({ room, agent, messages, trigger, logPath, skillText }
   };
   if (omitted) push('user', `（更早的 ${omitted} 条消息已省略）`);
   for (const m of kept) {
-    if (m.from === agent.id) push('assistant', String(m.text || '').trim() || '（无内容）');
-    else push('user', renderMsg(m, agent.id));
+    if (m.from === agent.id) {
+      push('assistant', String(m.text || '').trim() || '（无内容）');
+      if (m.acceptance) push('user', promptText(m.acceptance)); // 自己交付以后系统核对的结果
+    } else push('user', renderMsg(m, agent.id));
   }
   if (skillText) push('user', skillText);
   push('user', turnInstruction(room, agent, trigger));

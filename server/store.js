@@ -1,12 +1,14 @@
 'use strict';
 // 本地存储：
 //   data/projects/<项目 id>/project.json  项目：名字和文件夹。一个项目里可以有好几个会话，共用这个文件夹
-//   data/rooms/<会话 id>/room.json        会话：成员配置、各成员的会话记忆；messages.jsonl 存聊天记录
+//   data/rooms/<会话 id>/room.json        会话：成员配置、各成员的会话记忆；messages.jsonl 存聊天记录；
+//                                         baseline.json 是打开了交付验收清单时，任务开始时的文件快照
 // 另外在项目文件夹里给每个会话写一份 .agentchat/chat-<会话 id>.md，方便 AI 回顾更早的讨论，也方便人看。
 // （代码里的 room 就是会话，早期版本一个项目只有一个会话，所以叫 room。）
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { promptText } = require('./acceptance');
 
 const newId = (p) => p + '_' + crypto.randomBytes(5).toString('hex');
 const IS_WIN = process.platform === 'win32';
@@ -51,7 +53,8 @@ function normalizeRoom(r) {
   r.lastSeen = r.lastSeen || {};
   r.sideSessions = r.sideSessions || {}; // 侧边对话用的会话，和群聊里的分开
   r.sideSeen = r.sideSeen || {}; // 每个成员上次在侧边对话里回答时，群聊和侧边对话各到了哪一条
-  r.settings = { maxAutoTurns: 10, defaultAgent: '', ...(r.settings || {}) };
+  // acceptance：交付验收清单（见 acceptance.js），默认关
+  r.settings = { maxAutoTurns: 10, defaultAgent: '', acceptance: false, ...(r.settings || {}) };
   r.seq = r.seq || 0;
   return r;
 }
@@ -298,14 +301,44 @@ class Store {
     return msg;
   }
 
+  // 改一条已有的消息（比如用户在交付验收清单上点了「通过」）：fn 改好以后整份 messages.jsonl 重写一遍
+  updateMessage(roomId, id, fn) {
+    const list = this.messages(roomId);
+    const msg = list.find((m) => m.id === id);
+    if (!msg) return null;
+    fn(msg);
+    writeAtomic(path.join(this.dir(roomId), 'messages.jsonl'), list.map((m) => JSON.stringify(m) + '\n').join(''));
+    return msg;
+  }
+
   clearMessages(roomId) {
     this.msgs.set(roomId, []);
     fs.writeFileSync(path.join(this.dir(roomId), 'messages.jsonl'), '', 'utf8');
+    fs.rmSync(path.join(this.dir(roomId), 'baseline.json'), { force: true });
     const room = this.getRoom(roomId);
     if (room) {
       try {
         fs.rmSync(this.logPath(room), { force: true });
       } catch {}
+    }
+  }
+
+  // ---------- 任务开始时项目文件夹的快照（交付验收清单用，见 orchestrator.js 的 keepBase） ----------
+  // 存下来是为了中途重启 Nightshift 以后，交付时还能核对原有文件有没有被删除或覆盖
+  saveBaseline(roomId, b) {
+    const data = { seq: b.seq, at: b.at, ws: b.ws, truncated: !!b.snap.truncated, files: [...b.snap.map].map(([p, v]) => [p, v.m, v.s]) };
+    try {
+      fs.mkdirSync(this.dir(roomId), { recursive: true });
+      writeAtomic(path.join(this.dir(roomId), 'baseline.json'), JSON.stringify(data));
+    } catch {}
+  }
+
+  loadBaseline(roomId) {
+    try {
+      const d = JSON.parse(fs.readFileSync(path.join(this.dir(roomId), 'baseline.json'), 'utf8'));
+      return { seq: d.seq, at: d.at, ws: d.ws, snap: { map: new Map(d.files.map(([p, m, s]) => [p, { m, s }])), truncated: !!d.truncated } };
+    } catch {
+      return null;
     }
   }
 
@@ -359,7 +392,8 @@ class Store {
       }
       const when = new Date(msg.ts).toLocaleString('zh-CN', { hour12: false });
       const who = msg.from === 'user' ? '用户' : msg.name + (msg.role ? `（${msg.role}）` : '');
-      const note = msg.status === 'error' ? `\n\n> 运行出错：${String(msg.error || '').slice(0, 500)}` : msg.status === 'stopped' ? '\n\n> 被用户中止' : '';
+      let note = msg.status === 'error' ? `\n\n> 运行出错：${String(msg.error || '').slice(0, 500)}` : msg.status === 'stopped' ? '\n\n> 被用户中止' : '';
+      if (msg.acceptance) note += '\n\n' + promptText(msg.acceptance).replace(/^/gm, '> ');
       fs.appendFileSync(this.logPath(room), `\n## #${msg.seq} ${who}　${when}\n\n${msg.text || ''}${note}\n`, 'utf8');
     } catch {}
   }

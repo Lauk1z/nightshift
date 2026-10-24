@@ -435,6 +435,8 @@ module.exports = {
             emit({ type: 'tool', item });
             try {
               out = await execTool(tc.function.name, args, ctx);
+              // 命令跑完了但退出码不是 0（比如测试没通过）：这一步记为失败，交付验收清单靠它判断测试过没过
+              if (tc.function.name === 'run_command' && !/^退出码 0\b/.test(out)) ok = false;
             } catch (e) {
               ok = false;
               out = '出错：' + (e.message || String(e));

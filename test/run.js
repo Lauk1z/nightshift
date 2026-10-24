@@ -351,6 +351,360 @@ test('交付核对：写到项目外、什么都没改，记在消息上，下�
   assert.doesNotMatch(part('Bad'), /写到了项目文件夹以外|这一轮改动的文件/);
 });
 
+// ---- 交付验收清单（会话设置里打开）：成员交给用户验收时，按清单核对实际的文件和工具记录 ----
+const acceptance = require('../server/acceptance');
+
+test('交付验收清单：解析交付报告（中英文标签、写「无」的项、加粗、链接和括号里的说明）', () => {
+  const r = acceptance.parseReport(
+    [
+      '做好了，请验收 @用户',
+      '',
+      '**【交付报告】**',
+      '- 源代码：src/calc.py、[测试](tests/test_calc.py)（共 2 个）',
+      '- 测试命令：`python -m pytest -q`',
+      '- **可执行文件**：dist/calc.exe 已重新打包',
+      '- 依赖文件：无',
+      '- 启动测试：没法自动验证，请用户双击 dist/calc.exe',
+      '- 日志：logs/build.log',
+      '- 交付清单：DELIVERY.md',
+      '- 可以清理的中间产物：build/、calc.spec',
+      '',
+      '有问题再叫我。',
+    ].join('\n')
+  );
+  assert.deepStrictEqual(r.none, ['deps']);
+  assert.deepStrictEqual(acceptance.splitPaths(r.fields.source), ['src/calc.py', 'tests/test_calc.py']);
+  assert.deepStrictEqual(acceptance.splitPaths(r.fields.cleanup), ['build/', 'calc.spec']);
+  assert.strictEqual(r.fields.test, '`python -m pytest -q`');
+  assert.strictEqual(r.fields.launch, '没法自动验证，请用户双击 dist/calc.exe');
+  const en = acceptance.parseReport('Done.\n\nDelivery report:\n1. Source code: app.py\n2. Tests: npm test\n3. Executable: none\n4. Manifest: DELIVERY.md');
+  assert.deepStrictEqual([en.fields.source, en.fields.test, en.fields.manifest, en.none], ['app.py', 'npm test', 'DELIVERY.md', ['exe']]);
+  assert.strictEqual(acceptance.parseReport('做完以后我会写交付报告。'), null, '只提到交付报告、没有一项内容的不算');
+  assert.strictEqual(acceptance.parseReport('普通回答'), null);
+});
+
+test('交付验收清单：什么时候核对；哪些命令算跑了测试、删了文件；乱码怎么认', () => {
+  const yes = (text, handoff = false) => acceptance.isDelivery({ text, report: acceptance.parseReport(text), handoff });
+  assert.strictEqual(yes('全部完成，请验收 @用户'), true);
+  assert.strictEqual(yes('All done!'), true);
+  assert.strictEqual(yes('实现完成，@GPT-2 请审查', true), false, '交接给队友不算');
+  assert.strictEqual(yes('【交付报告】\n- 源代码：a.py', true), true, '写了交付报告的都算');
+  assert.strictEqual(yes('@用户 你想要深色还是浅色？'), false, '向用户提问不算');
+  assert.strictEqual(yes('还没有完成，需要你提供 API Key @用户'), false);
+  assert.strictEqual(yes('not yet done'), false);
+  const runs = {
+    'python -m pytest -q': ['pytest'],
+    'cd app && pytest tests/': ['pytest'],
+    'C:\\Python312\\python.exe -m unittest discover': ['unittest'],
+    'npm run test': ['npm test'],
+    'node test/run.js': ['run.js'],
+    'python test_calc.py': ['test_calc.py'],
+    '.\\run_tests.bat': ['run_tests.bat'],
+    'python -m pytest tests\\test_calc.py 2>&1 | Tee-Object logs\\test.log': ['pytest', 'test_calc.py'],
+    // 安装、查看测试文件、只是提到的，都不是跑测试
+    'pip install pytest': [],
+    'cat tests/test_x.py': [],
+    'type tests\\test_x.py': [],
+    'Get-Content tests\\test_calc.py | Select-Object -First 20': [],
+    'git diff tests/test_a.py': [],
+    'echo pytest': [],
+    'python calc.py': [],
+  };
+  for (const [cmd, want] of Object.entries(runs)) assert.deepStrictEqual(acceptance.testTokens(cmd), want, cmd);
+  for (const cmd of ['Remove-Item -Recurse build', 'cd x; rm -rf dist', 'del /q build\\*', 'python -c "import shutil; shutil.rmtree(\'build\')"', 'git clean -fdx']) assert.ok(acceptance.isRemove(cmd), cmd);
+  for (const cmd of ['python model.py', 'git status', 'echo removed']) assert.ok(!acceptance.isRemove(cmd), cmd);
+  // 乱码：一串串问号（中文用不支持的编码写出去就是这样）、替换字符、GBK
+  const dir = tmp();
+  const put = (name, data) => (fs.writeFileSync(path.join(dir, name), data), path.join(dir, name));
+  assert.deepStrictEqual(acceptance.textIssues(put('ok.md', '# 计算器\n真的吗???\n')), { utf8: true, qmarks: 0, fffd: 0 }, '一处 ??? 不算');
+  assert.deepStrictEqual(acceptance.textIssues(put('q.md', '# ???????\n\n?? ?????\n')), { utf8: true, qmarks: 2, fffd: 0 });
+  assert.strictEqual(acceptance.textIssues(put('r.txt', '计\uFFFD器')).fffd, 1);
+  assert.strictEqual(acceptance.textIssues(put('gbk.txt', Buffer.from([0xbc, 0xc6, 0xcb, 0xe3, 0xc6, 0xf7]))).utf8, false); // 「计算器」的 GBK
+  assert.strictEqual(acceptance.textIssues(put('bin.dat', Buffer.from([0x4d, 0x5a, 0, 1]))), null, '二进制不查');
+});
+
+test('交付验收清单：打开以后每一轮都附上清单和交付报告的格式，照抄格式里的说明不会被当成路径；关着的不附', () => {
+  const room = fakeRoom();
+  assert.doesNotMatch(buildCliPrompt({ room, agent: room.agents[1], messages: MSGS, fresh: false }), /交付报告/);
+  room.settings.acceptance = true;
+  const p = buildCliPrompt({ room, agent: room.agents[1], messages: MSGS, fresh: false });
+  assert.match(p, /## 交付验收清单（这个会话已打开）/);
+  assert.match(p, /【交付报告】\n- 源代码：/);
+  assert.match(p, /不要删除任何文件。构建中间产物/);
+  assert.ok(p.indexOf('交付验收清单') < p.indexOf('现在轮到你'), '在「轮到你」前面');
+  const api = buildApiMessages({ room, agent: room.agents[0], messages: MSGS });
+  assert.match(api[api.length - 1].content, /【交付报告】/);
+  const tpl = acceptance.parseReport(p.slice(p.indexOf('【交付报告】')));
+  for (const k of ['source', 'exe', 'deps', 'log', 'manifest', 'cleanup']) assert.deepStrictEqual(acceptance.splitPaths(tpl.fields[k]), [], k);
+});
+
+// 按名字做事的假成员：write / edit / cmd 会真的改项目文件夹，并且发出和真实工具一样的工具记录
+function scriptedAdapter(id, plays) {
+  adapters.register({
+    id,
+    label: 'Fake',
+    run({ agent, cwd, emit }) {
+      let n = 0;
+      const step = (k, d, s) => {
+        const tid = 't' + ++n;
+        emit({ type: 'tool', item: { id: tid, k, n: k, d, s: 'running' } });
+        emit({ type: 'tool', item: { id: tid, s } });
+      };
+      const t = {
+        write(rel, text) {
+          fs.mkdirSync(path.dirname(path.join(cwd, rel)), { recursive: true });
+          fs.writeFileSync(path.join(cwd, rel), text);
+          step('write', rel, 'ok');
+        },
+        edit(rel, text) {
+          fs.appendFileSync(path.join(cwd, rel), text);
+          step('edit', rel, 'ok');
+        },
+        cmd(command, ok = true, effect) {
+          if (effect) effect(cwd);
+          step('cmd', command, ok ? 'ok' : 'error');
+        },
+      };
+      return { done: Promise.resolve({ text: plays[agent.name](t, cwd) }), cancel() {} };
+    },
+  });
+}
+// 打包出来的 EXE（文件开头是 MZ）。ago：把修改时间往前拨几秒
+function fakeExe(cwd, rel, ago = 0) {
+  const exe = path.join(cwd, rel);
+  fs.mkdirSync(path.dirname(exe), { recursive: true });
+  fs.writeFileSync(exe, Buffer.concat([Buffer.from('MZ'), Buffer.alloc(510)]));
+  if (ago) fs.utimesSync(exe, new Date(Date.now() - ago * 1000), new Date(Date.now() - ago * 1000));
+}
+
+test('交付验收清单（假成员重现计算器那次）：测试过时、EXE 没重新打包、中文变问号、删了原有文件，逐项核对；用户确认后下一位成员看得到', async () => {
+  scriptedAdapter('fake-accept', {
+    GPT: (t) => {
+      t.write('src/calc.py', 'def add(a, b):\n    return a + b\n');
+      t.write('tests/test_calc.py', 'from src.calc import add\n\n\ndef test_add():\n    assert add(1, 2) == 3\n');
+      t.edit('main.py', '\n# 计算器入口\n');
+      t.cmd('python -m pytest -q');
+      t.cmd('pyinstaller --onefile src/calc.py', true, (cwd) => fakeExe(cwd, 'dist/calc.exe', 60));
+      t.write('docs/说明.md', '# 计算器使用说明\n\n????????\n');
+      t.cmd('Remove-Item notes/old.txt', true, (cwd) => fs.rmSync(path.join(cwd, 'notes', 'old.txt')));
+      return '实现完成，@GPT-2 请审查';
+    },
+    // 审查的成员改了代码，没再跑测试、没重新打包，却说全部通过
+    'GPT-2': (t) => {
+      t.edit('src/calc.py', '\n\ndef sub(a, b):\n    return a - b\n');
+      return '审查完成，22 个测试全部通过，可以交付了。@用户 请验收';
+    },
+  });
+  const dir = tmp();
+  const ws = path.join(dir, 'ws');
+  fs.mkdirSync(path.join(ws, 'notes'), { recursive: true });
+  fs.mkdirSync(path.join(ws, 'docs'));
+  // 上一次交付留下的交付清单；网页应用的 manifest.json 不是交付清单
+  const files0 = [['README.md', '# 原有项目\n'], ['main.py', 'print("hi")\n'], ['notes/old.txt', '旧笔记\n'], ['docs/交付清单.md', '# 上次的交付\n'], ['manifest.json', '{}']];
+  for (const [f, s] of files0) fs.writeFileSync(path.join(ws, f), s);
+  const store = new Store(path.join(dir, 'data'));
+  const orch = new Orchestrator(store, { send() {} });
+  const room = store.createRoom({
+    name: 't',
+    workspace: ws,
+    settings: { acceptance: true },
+    agents: [
+      { id: 'g', name: 'GPT', adapter: 'fake-accept', permission: 'full', enabled: true },
+      { id: 'g2', name: 'GPT-2', adapter: 'fake-accept', permission: 'full', enabled: true },
+    ],
+  });
+  orch.postUser(room.id, '@GPT 用 Python 做一个计算器，打包成 EXE');
+  await idle(orch, room.id);
+  const [dev, rev] = store.messages(room.id).filter((m) => m.kind === 'agent');
+  assert.strictEqual(dev.acceptance, undefined, '交接给队友时不核对');
+  const acc = rev.acceptance;
+  assert.strictEqual(acc.report, false);
+  const item = Object.fromEntries(acc.items.map((it) => [it.id, it]));
+  assert.deepStrictEqual(acc.items.map((it) => `${it.id}:${it.s}`), ['source:pass', 'tests:fail', 'exe:fail', 'launch:user', 'logs:fail', 'originals:fail', 'encoding:fail']);
+  assert.deepStrictEqual(item.source.f, [{ c: 'src-changed', files: ['src/calc.py', 'tests/test_calc.py', 'main.py'], n: 3 }]);
+  assert.deepStrictEqual(item.tests.f, [
+    { c: 'test-ran', who: 'GPT', cmd: 'python -m pytest -q', ok: true },
+    { c: 'test-stale', who: 'GPT-2', file: 'src/calc.py' },
+  ]);
+  assert.deepStrictEqual(item.exe.f, [{ c: 'exe-older', file: 'dist/calc.exe', src: 'src/calc.py' }]);
+  assert.deepStrictEqual(item.launch.f, [{ c: 'launch-unsaid' }, { c: 'launch-try', file: 'dist/calc.exe' }], '打包命令里提到 calc 不算启动过');
+  assert.deepStrictEqual(item.logs.f, [{ c: 'log-none' }, { c: 'manifest-old', files: ['docs/交付清单.md'], n: 1 }], '有交付清单，但不是这次生成的');
+  assert.deepStrictEqual(item.originals.f, [
+    { c: 'orig-deleted', files: ['notes/old.txt'], n: 1 },
+    { c: 'orig-modified', files: ['main.py'], n: 1 },
+    { c: 'rm-cmd', who: 'GPT', cmd: 'Remove-Item notes/old.txt' },
+  ]);
+  assert.deepStrictEqual(item.encoding.f, [{ c: 'enc-qmarks', file: 'docs/说明.md', n: 1 }]);
+  assert.deepStrictEqual(acc.cleanup, []);
+  // 核对不删任何东西，也不运行程序
+  assert.ok(fs.existsSync(path.join(ws, 'dist', 'calc.exe')));
+  // 用户试了 EXE，打不开：点了「不通过」
+  store.updateMessage(room.id, rev.id, (m) => (m.acceptance.items.find((it) => it.id === 'launch').u = 'fail'));
+  assert.strictEqual(JSON.parse(fs.readFileSync(path.join(dir, 'data', 'rooms', room.id, 'messages.jsonl'), 'utf8').trim().split('\n').pop()).acceptance.items[3].u, 'fail', '存进了文件');
+  // 下一位成员（第一次发言，拿到完整记录）看到的
+  const fix = { id: 'fix', name: 'Fix', adapter: 'fake-accept', enabled: true };
+  const p = buildCliPrompt({ room: { ...room, agents: [...room.agents, fix] }, agent: fix, messages: store.messages(room.id), fresh: true });
+  const part = p.slice(p.indexOf(`[#${rev.seq}] `)).split('\n\n')[0];
+  assert.match(part, /（交付验收清单，系统按实际文件和工具记录核对，成员没有写交付报告：/);
+  assert.match(part, /\n✗ 自动化测试：GPT 运行了 python -m pytest -q，成功；测试之后 GPT-2 又改了 src\/calc\.py，需要重新运行测试\n/);
+  assert.match(part, /\n✗ EXE 和依赖文件：dist\/calc\.exe 比最后一次改代码（src\/calc\.py）还早，没有重新打包\n/);
+  assert.match(part, /\n\? 启动测试：成员没有写启动测试的情况；等用户打开 dist\/calc\.exe 验收（用户确认：不通过）\n/);
+  assert.match(part, /\n✗ 原有文件：删除了原有的 notes\/old\.txt；修改了原有的 main\.py；GPT 运行过删除文件的命令：Remove-Item notes\/old\.txt/);
+  assert.match(part, /\n✗ 文字编码：docs\/说明\.md 里有一串串问号，中文可能被写坏了）$/);
+  // 交付的成员自己下一轮（有会话记忆，只收新消息）也能看到核对结果
+  room.lastSeen.g2 = rev.seq - 1;
+  const own = buildCliPrompt({ room, agent: room.agents[1], messages: store.messages(room.id), fresh: false });
+  assert.match(own, new RegExp(`## 你在 #${rev.seq} 交付以后\\n\\n（交付验收清单`));
+  // API 模型没有会话记忆：自己的发言后面跟着核对结果
+  const apiMsgs = buildApiMessages({ room, agent: room.agents[1], messages: store.messages(room.id) });
+  const at = apiMsgs.findIndex((m) => m.role === 'assistant' && m.content.startsWith('审查完成'));
+  assert.match(apiMsgs[at + 1].content, /^（交付验收清单/);
+  // 项目里的聊天记录文件也写上了
+  assert.match(fs.readFileSync(store.logPath(room), 'utf8'), /> （交付验收清单[\s\S]*> ✗ 自动化测试/);
+});
+
+test('交付验收清单：按格式交付的，能核对的都通过，启动测试交给用户；会话没打开清单时不核对', async () => {
+  const good = (t) => {
+    t.write('src/app.py', 'print("你好")\n');
+    t.write('tests/test_app.py', 'def test_ok():\n    assert True\n');
+    t.cmd('python -m pytest');
+    t.cmd('pyinstaller --onefile src/app.py', true, (cwd) => fakeExe(cwd, 'dist/app.exe'));
+    t.cmd('.\\dist\\app.exe --selftest');
+    t.write('logs/build.log', 'build ok\n');
+    t.write('DELIVERY.md', '# 交付清单\n\n- dist/app.exe\n');
+    return [
+      '做好了，请验收。',
+      '',
+      '【交付报告】',
+      '- 源代码：src/app.py、tests/test_app.py',
+      '- 测试命令：python -m pytest',
+      '- 可执行文件：dist/app.exe',
+      '- 依赖文件：无',
+      '- 启动测试：运行过 dist/app.exe --selftest，正常退出；界面请用户双击确认',
+      '- 日志：logs/build.log',
+      '- 交付清单：DELIVERY.md',
+      '- 可以清理的中间产物：build/、app.spec',
+    ].join('\n');
+  };
+  scriptedAdapter('fake-good', { Dev: good });
+  const run = async (settings) => {
+    const dir = tmp();
+    const ws = path.join(dir, 'ws');
+    fs.mkdirSync(ws);
+    fs.writeFileSync(path.join(ws, 'README.md'), '# 原有项目\n');
+    const store = new Store(path.join(dir, 'data'));
+    const orch = new Orchestrator(store, { send() {} });
+    const room = store.createRoom({ name: 't', workspace: ws, settings, agents: [{ id: 'd', name: 'Dev', adapter: 'fake-good', permission: 'full', enabled: true }] });
+    orch.postUser(room.id, '@Dev 做一个打招呼的小程序，打包成 EXE');
+    await idle(orch, room.id);
+    return store.messages(room.id).find((m) => m.kind === 'agent');
+  };
+  const acc = (await run({ acceptance: true })).acceptance;
+  assert.strictEqual(acc.report, true);
+  assert.deepStrictEqual(acc.items.map((it) => `${it.id}:${it.s}`), ['source:pass', 'tests:pass', 'exe:pass', 'launch:user', 'logs:pass', 'originals:pass', 'encoding:pass']);
+  const item = Object.fromEntries(acc.items.map((it) => [it.id, it]));
+  assert.deepStrictEqual(item.source.f[0], { c: 'src-ok', files: ['src/app.py', 'tests/test_app.py'], n: 2 });
+  assert.deepStrictEqual(item.tests.f, [{ c: 'test-ran', who: 'Dev', cmd: 'python -m pytest', ok: true }]);
+  assert.deepStrictEqual([item.exe.f.length, item.exe.f[0].c, item.exe.f[0].file, item.exe.f[0].fresh], [1, 'exe-ok', 'dist/app.exe', true], '依赖写了「无」，不再提醒');
+  assert.deepStrictEqual(item.launch.f, [
+    { c: 'launch-said', text: '运行过 dist/app.exe --selftest，正常退出；界面请用户双击确认' },
+    { c: 'launch-ran', who: 'Dev', cmd: '.\\dist\\app.exe --selftest', ok: true },
+    { c: 'launch-try', file: 'dist/app.exe' },
+  ]);
+  assert.deepStrictEqual(item.logs.f, [
+    { c: 'log-ok', files: ['logs/build.log'], n: 1 },
+    { c: 'manifest-ok', files: ['DELIVERY.md'], n: 1 },
+  ]);
+  assert.deepStrictEqual(item.originals.f, [{ c: 'orig-kept', n: 1 }]);
+  assert.deepStrictEqual(item.encoding.f, [{ c: 'enc-ok', n: 4 }]);
+  assert.deepStrictEqual(acc.cleanup, ['build/', 'app.spec']);
+  assert.match(acceptance.promptText(acc), /\n\? 启动测试：成员写的：运行过 dist\/app\.exe --selftest，正常退出；界面请用户双击确认；Dev 运行了 \.\\dist\\app\.exe --selftest，成功；等用户打开 dist\/app\.exe 验收（等用户确认）\n/);
+  assert.strictEqual((await run({})).acceptance, undefined, '没打开就不核对，交付报告写了也一样');
+});
+
+test('交付验收清单：任务开始时的快照存在磁盘上，中途重启 Nightshift 以后照样核对原有文件；任务开始时没打开的没法核对', async () => {
+  scriptedAdapter('fake-restart', {
+    A: (t) => {
+      t.cmd('del old.txt', true, (cwd) => fs.rmSync(path.join(cwd, 'old.txt')));
+      return '删掉了旧文件。'; // 没说做完，也没 @ 人：接力结束，不核对
+    },
+    B: () => '全部完成，请验收 @用户',
+  });
+  const dir = tmp();
+  const data = path.join(dir, 'data');
+  const make = (store, name, settings) => {
+    const ws = path.join(dir, name);
+    fs.mkdirSync(ws);
+    fs.writeFileSync(path.join(ws, 'old.txt'), '原有的');
+    return store.createRoom({ name, workspace: ws, settings, agents: ['A', 'B'].map((n) => ({ id: n.toLowerCase(), name: n, adapter: 'fake-restart', enabled: true })) });
+  };
+  const store = new Store(data);
+  const orch = new Orchestrator(store, { send() {} });
+  const on = make(store, 'on', { acceptance: true });
+  const off = make(store, 'off', {});
+  for (const room of [on, off]) {
+    orch.postUser(room.id, '@A 清理一下');
+    await idle(orch, room.id);
+  }
+  assert.ok(fs.existsSync(path.join(data, 'rooms', on.id, 'baseline.json')));
+  assert.ok(!fs.existsSync(path.join(data, 'rooms', off.id, 'baseline.json')), '没打开验收清单时不存');
+  // 重启：新的 Store 和编排器。没打开的那个会话现在才打开，再让 B 接着做（同一个任务）
+  const store2 = new Store(data);
+  const orch2 = new Orchestrator(store2, { send() {} });
+  store2.getRoom(off.id).settings.acceptance = true;
+  for (const room of [on, off]) {
+    orch2.poke(room.id, 'b');
+    await idle(orch2, room.id);
+  }
+  const originals = (id) => store2.messages(id).filter((m) => m.kind === 'agent').pop().acceptance.items.find((it) => it.id === 'originals');
+  assert.deepStrictEqual(originals(on.id), { id: 'originals', s: 'fail', f: [{ c: 'orig-deleted', files: ['old.txt'], n: 1 }, { c: 'rm-cmd', who: 'A', cmd: 'del old.txt' }] });
+  assert.deepStrictEqual(originals(off.id), { id: 'originals', s: 'user', f: [{ c: 'orig-nobase' }, { c: 'rm-cmd', who: 'A', cmd: 'del old.txt' }] });
+  // 清空聊天记录时快照一起删掉
+  store2.clearMessages(on.id);
+  assert.ok(!fs.existsSync(path.join(data, 'rooms', on.id, 'baseline.json')));
+});
+
+test('API 模型（完全权限）：命令的退出码不是 0 就记为失败，交付验收清单据此判断测试没通过', async () => {
+  let calls = 0;
+  const sent = [];
+  const srv = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (d) => (body += d));
+    req.on('end', () => {
+      sent.push(JSON.parse(body).messages);
+      calls++;
+      res.writeHead(200, { 'content-type': 'application/json' });
+      const reply = (message) => res.end(JSON.stringify({ choices: [{ message, finish_reason: 'stop' }] }));
+      const use = (name, args) => reply({ role: 'assistant', content: '', tool_calls: [{ id: 'c' + calls, type: 'function', function: { name, arguments: JSON.stringify(args) } }] });
+      if (calls === 1) use('write_file', { path: 'test/check.js', content: 'process.exit(1)\n' });
+      else if (calls === 2) use('run_command', { command: 'node test/check.js' });
+      else reply({ role: 'assistant', content: '测试都通过了，完成。@用户' });
+    });
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  try {
+    const dir = tmp();
+    const ws = path.join(dir, 'ws');
+    fs.mkdirSync(ws);
+    const store = new Store(path.join(dir, 'data'));
+    const orch = new Orchestrator(store, { send() {} });
+    const api = { baseUrl: `http://127.0.0.1:${srv.address().port}/v1` };
+    const room = store.createRoom({ name: 't', workspace: ws, settings: { acceptance: true }, agents: [{ id: 'ds', name: 'DS', adapter: 'openai', model: 'deepseek-chat', permission: 'full', enabled: true, api }] });
+    orch.postUser(room.id, '@DS 写个检查脚本并运行');
+    for (const t0 = Date.now(); orch.isBusy(room.id); ) {
+      if (Date.now() - t0 > 30000) throw new Error('超时');
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    const m = store.messages(room.id).find((x) => x.kind === 'agent');
+    const cmd = m.items.find((it) => it.k === 'cmd');
+    assert.deepStrictEqual([cmd.d, cmd.s], ['node test/check.js', 'error']);
+    assert.match(sent[2].find((x) => x.role === 'tool' && x.tool_call_id === 'c2').content, /^退出码 1/, '模型照样拿到命令的输出');
+    assert.deepStrictEqual(m.acceptance.items.find((it) => it.id === 'tests'), { id: 'tests', s: 'fail', f: [{ c: 'test-ran', who: 'DS', cmd: 'node test/check.js', ok: false }] });
+  } finally {
+    srv.close();
+  }
+});
+
 // ---- API 模型：用一个模拟的 OpenAI 兼容接口测试工具调用 ----
 test('API 模型：流式输出 + 调用工具写文件', async () => {
   let calls = 0;
@@ -1172,6 +1526,15 @@ test('使用说明：只给 GitHub 看的整行 HTML（图标、截图、语言�
 test('设置和用量接口；换了语言，服务端的报错和 boot.js 跟着换', async () => {
   const { start } = require('../server');
   const dir = tmp();
+  // 先在数据文件夹里放一个会话，里面有一条带交付验收清单的发言（服务端启动时读进来）
+  const seed = new Store(dir);
+  const sroom = seed.createRoom({ name: '验收', workspace: tmp(), settings: { acceptance: true } });
+  const accItems = [
+    { id: 'tests', s: 'fail', f: [{ c: 'test-none' }] },
+    { id: 'launch', s: 'user', f: [{ c: 'launch-try', file: 'dist/app.exe' }] },
+    { id: 'source', s: 'pass', f: [{ c: 'src-ok', files: ['app.py'], n: 1 }] },
+  ];
+  const smsg = seed.addMessage(sroom.id, { from: 'x', name: 'GPT', kind: 'agent', status: 'done', text: '做好了，请验收', acceptance: { at: 1, since: 0, report: false, items: accItems, cleanup: [] } });
   const srv = await start({ dataDir: dir, port: 0 });
   const call = (method, p, body) =>
     new Promise((resolve, reject) => {
@@ -1276,6 +1639,22 @@ test('设置和用量接口；换了语言，服务端的报错和 boot.js 跟�
       assert.deepStrictEqual((await call('GET', `/api/term?room=${second.id}`)).json().terminals, []);
       assert.strictEqual((await call('POST', '/api/term', { roomId: second.id, cols: 80, rows: 24 })).json().cwd, ws2);
     }
+    // 交付验收清单：会话设置里的开关（默认关）；「待你确认」的项点通过 / 不通过、没通过的项点「仍然通过」（空的就是取消），
+    // 记在消息上、存进文件；通过了的项不用点
+    assert.strictEqual(second.settings.acceptance, false);
+    assert.strictEqual((await call('PATCH', `/api/rooms/${second.id}`, { settings: { acceptance: true } })).json().settings.acceptance, true);
+    const vote = (item, verdict, mid = smsg.id) => call('POST', `/api/rooms/${sroom.id}/messages/${mid}/acceptance`, { item, verdict });
+    const verdictOf = (m, id) => m.acceptance.items.find((it) => it.id === id).u;
+    const onDisk = (id) => verdictOf(JSON.parse(fs.readFileSync(path.join(dir, 'rooms', sroom.id, 'messages.jsonl'), 'utf8').trim()), id);
+    assert.strictEqual(verdictOf((await vote('launch', 'fail')).json(), 'launch'), 'fail');
+    assert.strictEqual(onDisk('launch'), 'fail');
+    assert.strictEqual(verdictOf((await call('GET', `/api/rooms/${sroom.id}`)).json().messages[0], 'launch'), 'fail');
+    assert.strictEqual(verdictOf((await vote('launch', '')).json(), 'launch'), undefined);
+    assert.strictEqual(onDisk('launch'), undefined);
+    assert.strictEqual(verdictOf((await vote('tests', 'pass')).json(), 'tests'), 'pass', '没通过的项可以点「仍然通过」');
+    assert.strictEqual(onDisk('tests'), 'pass');
+    assert.strictEqual((await vote('source', 'fail')).status, 400, '通过了的项不用点');
+    assert.strictEqual((await vote('launch', 'pass', 'm_nope')).status, 404);
     // 删会话、删项目
     await call('DELETE', `/api/rooms/${second.id}`);
     assert.strictEqual((await call('GET', `/api/rooms/${second.id}`)).status, 404);

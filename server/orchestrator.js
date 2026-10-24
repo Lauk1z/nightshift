@@ -8,6 +8,7 @@ const fs = require('fs');
 const adapters = require('./adapters');
 const files = require('./files');
 const skills = require('./skills');
+const acceptance = require('./acceptance');
 const { recordRun } = require('./usage');
 const { t: tr } = require('./i18n');
 const { parseMentions, buildCliPrompt, buildApiMessages } = require('./prompt');
@@ -30,6 +31,11 @@ function delivery({ items, changed, status, complete, canWrite }) {
   if (status === 'done' && canWrite && complete && !changed.length && !wrote.some((it) => !it.out)) check.unchanged = true;
   return check;
 }
+
+const lastUserSeq = (msgs) => {
+  for (let i = msgs.length - 1; i >= 0; i--) if (msgs[i].from === 'user') return msgs[i].seq;
+  return 0;
+};
 
 function statusFor(it) {
   const d = clip(it.d || '', 48);
@@ -57,8 +63,9 @@ class Orchestrator {
   rt(roomId) {
     let r = this.rts.get(roomId);
     if (!r) {
-      // pauseReason：limit = 自动接力到了上限；error = 有成员出错，后面的先不做
-      r = { queue: [], running: null, paused: false, pauseReason: '', failed: null, autoTurns: 0, timer: null, lastSent: 0 };
+      // pauseReason：limit = 自动接力到了上限；error = 有成员出错，后面的先不做。
+      // task：这次任务从哪条用户消息开始（空闲时发的消息开始一次新任务）；base：任务开始时的文件快照（见 keepBase）
+      r = { queue: [], running: null, paused: false, pauseReason: '', failed: null, autoTurns: 0, timer: null, lastSent: 0, task: 0, base: null };
       this.rts.set(roomId, r);
     }
     return r;
@@ -142,9 +149,15 @@ class Orchestrator {
     if (!room) throw new Error(tr('会话不存在'));
     let targets = this.resolveTargets(room, text);
     if (!targets.length) targets = this.defaultTargets(room);
+    const fresh = !this.isBusy(roomId);
     const msg = this.store.addMessage(roomId, { from: 'user', name: '用户', kind: 'user', text });
     this.bus.send('message', { roomId, message: msg });
     const r = this.rt(roomId);
+    if (fresh) {
+      // 空闲时发的消息开始一次新任务，开始时的文件快照等第一位成员开始工作时再拍
+      r.task = msg.seq;
+      r.base = null;
+    }
     this.unpause(r);
     r.autoTurns = 0;
     this.enqueue(roomId, targets, { auto: false, seq: msg.seq, byName: '用户' });
@@ -225,6 +238,7 @@ class Orchestrator {
       if (!adapter) throw new Error(tr('未知的接入方式：{name}', { name: agent.adapter }));
       if (!room.workspace || !fs.existsSync(room.workspace)) throw new Error(tr('项目文件夹不存在：{path}', { path: room.workspace || tr('（未设置）') }));
       before = files.snapshot(room.workspace); // 和结束时的快照对比，就知道这一轮动了哪些文件
+      this.keepBase(room, r, before, run.startedAt);
       res = await this.invoke(room, agent, adapter, run, trigger);
       // 会话找不到（比如换了项目文件夹）→ 丢掉旧会话，从头带上完整记录重试一次
       if (res.error && !run.stopped && res.usedSession && run.items.length === 0 && RESUME_FAIL.test(`${res.error}\n${res.stderr || ''}`)) {
@@ -261,6 +275,16 @@ class Orchestrator {
       complete: !!before && !before.truncated && !after.truncated,
       canWrite: agent.permission !== 'readonly',
     });
+    const targets = status === 'done' ? this.resolveTargets(room, text, agent.id) : [];
+    // 交付验收清单：打开了、并且这一条是在交给用户验收时才核对。核对出了问题也不能弄丢成员的发言
+    let accepted;
+    if (room.settings.acceptance && status === 'done') {
+      try {
+        accepted = this.accept(room, r, { agent, text, targets, items: run.items, outside: check.outside, files: changed, after });
+      } catch (e) {
+        console.error('[acceptance]', e);
+      }
+    }
     const msg = this.store.addMessage(roomId, {
       from: agent.id,
       name: agent.name,
@@ -273,6 +297,7 @@ class Orchestrator {
       items: items.slice(-300).map((it) => (it.k === 'note' ? { ...it, d: clip(it.d, 4000) } : it)),
       files: changed,
       ...check,
+      ...(accepted ? { acceptance: accepted } : {}),
       meta: { ms: Date.now() - run.startedAt, model: res.model || agent.model || '', effort: agent.effort || '' },
     });
     r.running = null;
@@ -282,7 +307,6 @@ class Orchestrator {
     recordRun(this.usage, { room, agent, res, startedAt: run.startedAt, side: false }).catch(() => {});
 
     if (status === 'done') {
-      const targets = this.resolveTargets(room, text, agent.id);
       this.enqueue(roomId, targets, { auto: true, seq: msg.seq, byName: agent.name });
     } else if (status === 'error' && r.queue.length) {
       // 这一环出错了，后面排队的成员先不做：等用户修好后让它重试，或者明确跳过
@@ -297,6 +321,49 @@ class Orchestrator {
       );
     }
     this.emitState(roomId);
+  }
+
+  // 任务开始时的文件快照：就是这次任务第一轮开始前拍的那张（runTurn 的 before），交付验收时用来核对原有文件。
+  // 打开了验收清单的会话存一份到磁盘，中途重启 Nightshift 以后还能用
+  keepBase(room, r, snap, at) {
+    if (r.base) return;
+    const msgs = this.store.messages(room.id);
+    if (!r.task) r.task = lastUserSeq(msgs);
+    if (msgs.some((m) => m.kind === 'agent' && m.seq > r.task)) {
+      // 任务已经做过几轮（比如重启以后接着做）：现在拍的不是开始时的样子，用存下来的那张，没有就算没有
+      const saved = this.store.loadBaseline(room.id);
+      r.base = saved && saved.seq === r.task && saved.ws === room.workspace ? saved : { seq: r.task, none: true };
+      return;
+    }
+    r.base = { seq: r.task, at, ws: room.workspace, snap };
+    if (room.settings.acceptance) this.store.saveBaseline(room.id, r.base);
+  }
+
+  // 任务做到一半才打开验收清单：把内存里那张快照也存下来
+  saveBase(roomId) {
+    const r = this.rt(roomId);
+    if (r.base && r.base.snap) this.store.saveBaseline(roomId, r.base);
+  }
+
+  // 成员这一条发言算交给用户验收的话，按清单核对这次任务（见 acceptance.js），不算就返回 undefined
+  accept(room, r, cur) {
+    const report = acceptance.parseReport(cur.text);
+    if (!acceptance.isDelivery({ text: cur.text, report, handoff: cur.targets.length > 0 })) return undefined;
+    const msgs = this.store.messages(room.id);
+    const task = r.task || lastUserSeq(msgs);
+    const base = r.base && r.base.snap && r.base.ws === room.workspace && r.base.seq === task ? r.base : null;
+    const start = msgs.find((m) => m.seq === task);
+    const turns = msgs.filter((m) => m.kind === 'agent' && m.seq > task).map((m) => ({ name: m.name, items: m.items, outside: m.outside, files: m.files }));
+    turns.push({ name: cur.agent.name, items: cur.items, outside: cur.outside, files: cur.files });
+    return acceptance.check({
+      root: room.workspace,
+      text: cur.text,
+      report,
+      turns,
+      base,
+      after: cur.after,
+      since: base ? { seq: base.seq, at: base.at } : { seq: task, at: start ? start.ts : 0 },
+    });
   }
 
   async invoke(room, agent, adapter, run, trigger) {

@@ -115,7 +115,7 @@ A project is a folder, and a chat is a group chat that works in that folder. To 
 - **New project**: pick a folder, then the members of its first chat: "Design + development", "Design + development + review", or "Blank" to add them yourself later.
 - **New chat**: hover over a project in the sidebar and click +, or use "New chat" in the chat name ▾ menu in the title bar, then name the chat and pick its members in the dialog. By default it copies the members of the chat you're in, with the same models, thinking effort and permissions; you can also pick a team such as "Design + development", or "Blank". You can change them afterwards without affecting the original chat.
 - **Chat names**: if you leave the name blank, the chat starts out as "New chat" and is named after your first message. To rename it, use "Rename chat…" in the chat name ▾ menu.
-- **What's shared**: chats in the same project share the project folder and the terminals. History, members, side chat, the default recipient and the auto-relay limit belong to each chat.
+- **What's shared**: chats in the same project share the project folder and the terminals. History, members, side chat, the default recipient, the auto-relay limit and the delivery checklist belong to each chat.
 - **Changing the folder**: do it in project settings. Every chat in the project moves with it, and members start fresh by rereading the chat history. Open terminals are still in the old folder, so they're closed too; new terminals open in the new folder.
 - **Chat actions**: right-click a chat in the sidebar, or hover over it and click ⋯ on the right: pin or unpin, rename, chat settings, new chat with the same members, delete. Right-clicking a project shows the project's actions.
 - **Pinning**: pinned chats stay at the top of their project, with a pin on the left.
@@ -277,6 +277,33 @@ Dependencies and build output (`node_modules`, `dist`, `build` and so on) and fo
 - Files written outside the project folder with an editing tool: the message warns "N files were written outside the project folder" and lists their paths, and the matching step in the work log is tagged "outside project". Files written outside by a command can't be detected.
 - A member that can change files didn't change any this turn: a small line says "No files in the project folder were changed this turn". Read-only members don't get this line.
 - The collaboration rules also tell members to keep every file in the project folder, to check that the files really exist before saying they're done, and to only say tests pass after actually running them.
+
+To check the source code, tests, EXE, logs and the rest together when the work is handed over, turn on the delivery checklist below.
+
+## Delivery checklist
+
+When you have members build a whole project and hand it to you at the end (say, a small program packaged as an EXE), turn on the **Delivery checklist** in Chat settings. From then on, when a member says the work is done and hands it to you, Nightshift checks the actual files and tool logs item by item and puts the result in a card under that message, instead of taking "all done, all tests pass" at face value. It's off by default and set per chat.
+
+When it runs: the member's final reply contains a delivery report, or the relay ends with that member (it doesn't @mention another member to carry on) and it says the work is done or asks you to accept it. Handoffs between members and questions to you aren't checked, so ordinary chat isn't affected.
+
+| Item | How Nightshift checks it |
+| --- | --- |
+| Source code created, in the project folder | Whether the source files in the report exist and are inside the project folder; which source files this task created or changed; whether any file was written outside the project folder |
+| Automated tests actually ran and passed | Only test commands that really ran in this task according to the tool log count (pytest, unittest, npm test, go test and the like, or a test file run with python or node), along with whether that step succeeded. Tests that never ran don't count, whatever the member says; if code changed after the tests ran, they need to run again |
+| The EXE and its required files exist | Whether the executable and required files in the report exist; whether the EXE is a valid Windows program, is empty, or is older than the last code change (meaning it wasn't rebuilt). Without a report, Nightshift looks in folders like dist and build. If the delivery has no executable, this item doesn't apply |
+| Launch test done on Windows | Nightshift won't run programs the members built, so this one is always yours: the card shows what the member said about launching it and who started it in a command. Click the file name to find the EXE in its folder, try it, then click Pass or Fail |
+| Log and delivery manifest written | Whether the log and manifest files in the report exist. Without a report, Nightshift looks through the project for files like `.log`, `logs/` and `DELIVERY.md`. Files that weren't written in this task still count, but the card says so |
+| No existing project files deleted or overwritten by accident | Compared with the project folder at the start of the task: deleting an existing file fails this item; changing existing files, or a member running a command that deletes files, is left for you to confirm as intended |
+| No text turned into question marks or garbled characters | Checks the text files changed in this task for runs of question marks (what Chinese text turns into when it's saved with an encoding that can't hold it), garbled characters, and files that aren't UTF-8 |
+
+Each item is ✓ passed, ✗ failed, ? waiting for you, or – not applicable, with the evidence underneath; click a file name to preview it or show it in its folder. Items waiting for you have Pass and Fail buttons on the right; click again to undo. The check goes by files and commands, so it can get things wrong: if you're sure a failed item is actually fine, click "Pass anyway" next to it (you can undo that too).
+
+- **Delivery report**: with the checklist on, every turn tells members what's on the checklist and the report format: source code, test command, executable, required files, launch test, log, delivery manifest, and build leftovers that can be cleaned up, one line each, "none" when there isn't one. If a member doesn't follow the format, Nightshift looks through the project itself and says so on the card.
+- **Who sees the result**: the card, including your Pass and Fail clicks, is added to the chat history the next member reads, and the member that delivered sees it on its next turn too, so you can just @mention it to "fix what failed on the checklist". It's also written to the chat history file in the project.
+- **Nothing gets deleted**: checking only reads files, and members are told not to delete any. Build leftovers they want to clean up (`build/`, `__pycache__/`, `*.spec` and so on) go under "build leftovers" in the report and are listed on the card; "Approve cleanup…" puts an approval in the message box for you to check and send to the member.
+- **Where a task starts**: a message you send while no member is working starts a new task. Nightshift records what the project folder looked like at the start and compares against it for existing files; chats with the checklist on save that record in the data folder, so a restart midway doesn't lose it. Dependencies, build output and folders starting with `.` aren't checked.
+- **It checks facts, not quality**: for tests it can confirm that the command really ran and succeeded; whether the tests cover enough and whether the program works the way you want is still up to you. Files written outside the project by a command can't be detected.
+- For members to run tests and build packages themselves, give them a permission that can run commands (see Permissions below).
 
 ## Choosing each member's model and thinking effort
 

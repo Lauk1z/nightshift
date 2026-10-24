@@ -562,6 +562,11 @@ route('PATCH', '/api/rooms/:id', async (req, { params, body }) => {
     const s = body.settings;
     if (s.maxAutoTurns !== undefined) room.settings.maxAutoTurns = Math.min(100, Math.max(1, Number(s.maxAutoTurns) || 10));
     if (s.defaultAgent !== undefined) room.settings.defaultAgent = room.agents.some((a) => a.id === s.defaultAgent) ? s.defaultAgent : '';
+    if (s.acceptance !== undefined) {
+      // 任务做到一半才打开：任务开始时的快照这时还在内存里，存一份下来（见 orchestrator.js 的 keepBase）
+      if (s.acceptance && !room.settings.acceptance) orch.saveBase(room.id);
+      room.settings.acceptance = !!s.acceptance;
+    }
   }
   store.saveRoom(room);
   bus.send('room', publicRoom(room));
@@ -655,6 +660,22 @@ route('POST', '/api/rooms/:id/messages', async (req, { params, body }) => {
     bus.send('room', publicRoom(room));
   }
   broadcastRooms();
+  return msg;
+});
+
+// 交付验收清单：「待你确认」的项点了通过 / 不通过，没通过的项点了「仍然通过」（verdict 为空就是取消）。
+// 结果记在那条消息上，下一位成员的聊天记录里也看得到
+route('POST', '/api/rooms/:id/messages/:mid/acceptance', async (req, { params, body }) => {
+  needRoom(params.id);
+  const verdict = ['pass', 'fail'].includes(body.verdict) ? body.verdict : '';
+  const msg = store.updateMessage(params.id, params.mid, (m) => {
+    const it = m.acceptance && m.acceptance.items.find((x) => x.id === body.item);
+    if (!it || (it.s !== 'user' && it.s !== 'fail')) throw bad(tr('这一项不需要你确认'));
+    if (verdict) it.u = verdict;
+    else delete it.u;
+  });
+  if (!msg) throw new HttpError(404, tr('消息不存在'));
+  bus.send('message-update', { roomId: params.id, message: msg });
   return msg;
 });
 

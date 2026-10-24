@@ -1176,6 +1176,145 @@
     return el(`<div class="deliver">${warn}${none}</div>`);
   }
 
+  // ---------- 交付验收清单：成员把成果交给你验收时，服务端按清单核对出来的（见 server/acceptance.js） ----------
+  // 每项 ✓ 通过 / ✗ 没通过 / ? 待你确认（点「通过」「不通过」）/ – 不涉及，下面一行行写着依据
+  const ACCEPT_TITLE = {
+    source: tr('源代码已创建，路径在项目文件夹里'),
+    tests: tr('自动化测试实际执行并通过'),
+    exe: tr('EXE 和所需依赖文件实际存在'),
+    launch: tr('在 Windows 上完成启动测试'),
+    logs: tr('日志和交付清单已经生成'),
+    originals: tr('项目原有文件没有被意外删除或覆盖'),
+    encoding: tr('文字没有变成问号或乱码'),
+  };
+  const ACCEPT_MARK = { pass: ICONS.check, fail: ICONS.close, user: ICONS.help, na: I('<path d="M4.5 8h7"/>') };
+  const fmtSize = (n) => (n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`);
+
+  // 依据里的文件做成可以点的链接：能预览的在右侧面板预览，EXE 这类在文件夹中显示
+  function accFile(p) {
+    const tip = fileType(p).kind === 'exec' ? tr('点击在文件夹中显示') : tr('点击预览');
+    return `<button type="button" class="acc-file" data-file-open="${esc(p)}" title="${esc(p + ' · ' + tip)}">${esc(p)}</button>`;
+  }
+  // 一句依据（服务端记的是数据，见 acceptance.js）：文字原样代进去，文件和命令先放记号，
+  // 翻译、转义以后再把记号换成文件链接和代码
+  function accFact(x) {
+    const mark = (k) => `\u0001${k}\u0001`;
+    const v = { n: x.n, who: x.who, text: x.text, size: x.size != null ? fmtSize(x.size) : '', time: x.at ? fmtTime(x.at) : '', files: mark('files'), file: mark('file'), src: mark('src'), cmd: mark('cmd') };
+    const html = {
+      files: x.files ? x.files.map(accFile).join(esc(tr('、'))) + (x.n > x.files.length ? esc(tr(' 等 {n} 个', { n: x.n })) : '') : '',
+      file: x.file ? accFile(x.file) : '',
+      src: x.src ? accFile(x.src) : '',
+      cmd: x.cmd ? `<code>${esc(x.cmd)}</code>` : '',
+    };
+    const say = (s) => esc(s).replace(/\u0001(\w+)\u0001/g, (m, k) => html[k] || '');
+    const ran = () =>
+      x.ok
+        ? say(tr('{who} 运行了 {cmd}，工具记录显示成功', v))
+        : x.ok === false
+          ? say(tr('{who} 运行了 {cmd}，工具记录显示失败', v))
+          : say(tr('{who} 运行了 {cmd}，没有拿到结果', v));
+    switch (x.c) {
+      case 'src-ok': return say(tr('{files} 都在项目文件夹里', v));
+      case 'src-missing': return say(tr('交付报告里写的 {files} 不存在', v));
+      case 'src-outside': return say(tr('{files} 不在项目文件夹里', v));
+      case 'src-changed': return say(tr('这次任务新建或修改了 {n} 个源代码文件：{files}', v));
+      case 'src-none': return say(tr('这次任务没有新建或修改源代码，交付报告里也没有列出', v));
+      case 'wrote-outside': return say(tr('有 {n} 个文件用编辑工具写到了项目文件夹以外：{files}', v));
+      case 'test-ran': return ran();
+      case 'test-stale': return say(tr('测试之后 {who} 又改了 {file}，需要重新运行测试', v));
+      case 'test-claimed': return say(tr('交付报告里写的 {cmd} 没有在工具记录里出现', v));
+      case 'test-said': return say(tr('成员说测试通过了，但工具记录里没有运行测试的命令', v));
+      case 'test-none': return say(tr('工具记录里没有运行测试的命令', v));
+      case 'no-cmds': return say(tr('这次任务里没有成员运行过命令。想让成员自己跑测试，在成员设置里给它能运行命令的权限', v));
+      case 'exe-ok':
+        return x.fresh
+          ? say(tr('{file}（{size}，这次任务里打包的）', v))
+          : say(tr('{file}（{size}，打包于 {time}）', v));
+      case 'exe-missing': return say(tr('{file} 不存在', v));
+      case 'exe-outside': return say(tr('{file} 不在项目文件夹里', v));
+      case 'exe-empty': return say(tr('{file} 是空文件', v));
+      case 'exe-invalid': return say(tr('{file} 不是有效的 Windows 程序', v));
+      case 'exe-older': return say(tr('{file} 比最后一次改代码（{src}）还早，改完代码没有重新打包', v));
+      case 'exe-na': return say(tr('这次交付没有可执行文件', v));
+      case 'deps-ok': return say(tr('依赖文件都在：{files}', v));
+      case 'deps-missing': return say(tr('依赖文件不存在：{files}', v));
+      case 'deps-outside': return say(tr('依赖文件不在项目文件夹里：{files}', v));
+      case 'deps-none': return say(tr('交付报告里没有列出依赖文件', v));
+      case 'launch-said': return say(tr('成员写的启动测试：{text}', v));
+      case 'launch-ran': return ran();
+      case 'launch-unsaid': return say(tr('成员没有写启动测试的情况', v));
+      case 'launch-try': return say(tr('Nightshift 不会替你运行成员做的程序。请打开 {file} 试一下：能不能启动，界面和中文显示是否正常', v));
+      case 'launch-na': return say(tr('没有找到要启动的程序', v));
+      case 'log-ok': return say(tr('日志：{files}', v));
+      case 'log-old': return say(tr('日志 {files} 不是这次任务里生成的', v));
+      case 'log-missing': return say(tr('日志 {files} 不存在', v));
+      case 'log-said-none': return say(tr('成员说没有日志', v));
+      case 'log-none': return say(tr('没有找到日志文件', v));
+      case 'manifest-ok': return say(tr('交付清单：{files}', v));
+      case 'manifest-old': return say(tr('交付清单 {files} 不是这次任务里生成的', v));
+      case 'manifest-missing': return say(tr('交付清单 {files} 不存在', v));
+      case 'manifest-said-none': return say(tr('成员说没有交付清单', v));
+      case 'manifest-none': return say(tr('没有找到交付清单', v));
+      case 'orig-kept': return say(tr('任务开始时的 {n} 个文件都还在，也没有被修改', v));
+      case 'orig-deleted': return say(tr('删除了 {n} 个原有文件：{files}', v));
+      case 'orig-modified': return say(tr('修改了 {n} 个原有文件：{files}，是有意改的就没问题', v));
+      case 'orig-nobase': return say(tr('没有任务开始时的文件记录（比如任务中途重启过 Nightshift），没法核对', v));
+      case 'orig-toomany': return say(tr('项目里的文件太多（超过 2 万个），没法逐个核对', v));
+      case 'rm-cmd': return say(tr('{who} 运行过删除文件的命令：{cmd}', v));
+      case 'enc-qmarks': return say(tr('{file} 里有 {n} 串连续的问号，中文可能被写坏了', v));
+      case 'enc-fffd': return say(tr('{file} 里有 {n} 个乱码字符（�）', v));
+      case 'enc-gbk': return say(tr('{file} 不是 UTF-8 编码，换个程序或电脑打开可能是乱码', v));
+      case 'enc-ok': return say(tr('检查了这次改动的 {n} 个文本文件，没有发现问号或乱码', v));
+      case 'enc-na': return say(tr('这次任务没有改动文本文件', v));
+      default: return '';
+    }
+  }
+
+  function acceptNode(m) {
+    const acc = m.acceptance;
+    // 用户点过的以用户的为准
+    const final = (it) => it.u || it.s;
+    const count = (s) => acc.items.filter((it) => final(it) === s).length;
+    const sum = [
+      [count('pass'), 'good', tr('{n} 项通过', { n: count('pass') })],
+      [count('fail'), 'bad', tr('{n} 项没通过', { n: count('fail') })],
+      [count('user'), 'wait', tr('{n} 项待你确认', { n: count('user') })],
+    ]
+      .filter(([n]) => n)
+      .map(([, cls, t]) => `<span class="${cls}">${esc(t)}</span>`)
+      .join('');
+    const label = { pass: tr('通过'), fail: tr('没通过'), user: tr('待你确认'), na: tr('不涉及') };
+    const rows = acc.items
+      .map((it) => {
+        const title = it.id === 'launch' && S.env && S.env.platform !== 'win32' ? tr('完成启动测试') : ACCEPT_TITLE[it.id] || it.id;
+        const state = it.u ? (it.u === 'pass' ? tr('你确认通过') : tr('你确认不通过')) : label[it.s];
+        // 待你确认的：通过 / 不通过；没通过的：核对得不对时点「仍然通过」，点过的可以撤销
+        const vote =
+          it.s === 'user'
+            ? `<span class="acc-vote" role="group" aria-label="${esc(title)}">${['pass', 'fail']
+                .map((v) => `<button type="button" class="btn small" data-accept-vote="${v}" data-accept-item="${it.id}" aria-pressed="${it.u === v}">${v === 'pass' ? tr('按钮::通过') : tr('按钮::不通过')}</button>`)
+                .join('')}</span>`
+            : it.s === 'fail'
+              ? `<span class="acc-vote"><button type="button" class="link-btn" data-accept-vote="pass" data-accept-item="${it.id}" title="${esc(tr('核对靠的是文件和命令的特征，难免看错。你确认这一项没问题，就点这里'))}">${it.u ? tr('撤销') : tr('仍然通过')}</button></span>`
+              : '';
+        const tip = it.id === 'originals' ? ` title="${esc(tr('依赖、构建产物和 . 开头的文件夹不在核对范围内'))}"` : '';
+        return `<li class="acc-item s-${final(it)}"${tip}><span class="acc-mark">${ACCEPT_MARK[final(it)] || ACCEPT_MARK.user}</span>
+          <div class="acc-main"><div class="acc-title"><b>${esc(title)}</b><span class="acc-state">${esc(state)}</span></div>
+            <ul class="acc-facts">${(it.f || []).map((x) => `<li>${accFact(x)}</li>`).join('')}</ul></div>${vote}</li>`;
+      })
+      .join('');
+    const clean = acc.cleanup && acc.cleanup.length
+      ? `<div class="acc-clean"><span>${esc(tr('成员列出的可以清理的中间产物：'))}${acc.cleanup.map((p) => `<code>${esc(p)}</code>`).join(' ')}</span>
+          <button type="button" class="btn small" data-accept-clean>${esc(tr('批准清理…'))}</button>
+          <small>${esc(tr('Nightshift 不会自动删除任何文件。点「批准清理…」会把批准的话放进输入框，你确认后再发给成员。'))}</small></div>`
+      : '';
+    const worst = count('fail') ? 'bad' : count('user') ? 'wait' : 'good';
+    return el(`<section class="accept ${worst}" data-accept="${m.id}" aria-label="${esc(tr('交付验收清单'))}">
+      <header class="accept-head"><b>${esc(tr('交付验收清单'))}</b><span class="accept-sum">${sum}</span></header>
+      ${acc.report ? '' : `<p class="accept-note">${esc(tr('成员没有按格式写交付报告，下面是 Nightshift 自己在项目里找到的。'))}</p>`}
+      <ol class="acc-list">${rows}</ol>${clean}</section>`);
+  }
+
   // 把 AI 写的各种路径（/E:/x/y.html、file://、绝对路径、带 :行号）变成项目里的相对路径
   function toRel(p) {
     let s = String(p || '').trim().replace(/^file:\/\/\/?/i, '');
@@ -1413,6 +1552,7 @@
     if (m.status === 'error') {
       body.append(el(`<div class="err"><b>${esc(tr('{name} 运行出错', { name }))}</b><pre>${esc(m.error || tr('未知错误'))}</pre></div>`));
     }
+    if (m.acceptance && Array.isArray(m.acceptance.items)) body.append(acceptNode(m)); // 紧跟在成员说的话后面
     if (m.files && m.files.length) body.append(filesNode(m));
     if ((m.outside && m.outside.length) || m.unchanged) body.append(checkNode(m));
     if (m.items && m.items.length) body.append(workNode(m.items, m.id));
@@ -3169,6 +3309,8 @@
           <input class="input" id="ps-max" type="number" min="1" max="100" value="${r.settings.maxAutoTurns || 10}">
           <span class="hint">${tr('AI 之间连续交接这么多轮后暂停，等你确认')}</span></div>
       </div>
+      <div class="field"><label class="check"><input type="checkbox" id="ps-accept" ${r.settings.acceptance ? 'checked' : ''}>${tr('交付验收清单')}</label>
+        <span class="hint">${tr('成员说做完了、把成果交给你验收时，Nightshift 按清单核对源代码、测试、EXE、启动测试、日志和原有文件，结果做成一张卡片，不只听成员怎么说。只是交接给队友、向你提问时不核对。')}</span></div>
       <div class="field"><span class="label">${tr('项目文件夹')}</span><code class="hint" style="font-family:var(--mono);overflow-wrap:anywhere">${esc(r.workspace)}</code>
         <span class="hint">${tr('项目里的会话都在这个文件夹里工作，要换的话去项目设置。')} <button type="button" class="link-btn" data-project-settings>${tr('项目设置…')}</button></span></div>
       ${
@@ -3208,7 +3350,7 @@
     const save = async () => {
       await api('PATCH', `/api/rooms/${r.id}`, {
         name: $('#ps-name', body).value,
-        settings: { defaultAgent: $('#ps-def', body).value, maxAutoTurns: Number($('#ps-max', body).value) },
+        settings: { defaultAgent: $('#ps-def', body).value, maxAutoTurns: Number($('#ps-max', body).value), acceptance: $('#ps-accept', body).checked },
       });
       m.close();
       toast(tr('已保存'));
@@ -3418,7 +3560,7 @@
   // ---------- 点击 ----------
   document.addEventListener('click', async (e) => {
     const t = e.target.closest(
-      '[data-room],[data-new-project],[data-add-member],[data-agent],[data-at],[data-refresh-env],[data-settings],[data-open-folder],[data-stop],[data-continue],[data-work],[data-poke],[data-example],[data-tb],[data-tb-panel],[data-pick],[data-file-open],[data-file-menu],[data-file-link],[data-files-more],[data-copy-msg],[data-copy-code],[data-acct],[data-acct-tools],[data-update],[data-to-pick],[data-proj-toggle],[data-new-chat],[data-proj-menu],[data-chat-menu],[data-members],#jump'
+      '[data-room],[data-new-project],[data-add-member],[data-agent],[data-at],[data-refresh-env],[data-settings],[data-open-folder],[data-stop],[data-continue],[data-work],[data-poke],[data-example],[data-tb],[data-tb-panel],[data-pick],[data-file-open],[data-file-menu],[data-file-link],[data-files-more],[data-copy-msg],[data-copy-code],[data-acct],[data-acct-tools],[data-update],[data-to-pick],[data-proj-toggle],[data-new-chat],[data-proj-menu],[data-chat-menu],[data-members],[data-accept-vote],[data-accept-clean],#jump'
     );
     // 成员面板开着时，点到面板外面就收起
     if ($('#membersPop') && !e.target.closest('#membersPop') && !e.target.closest('[data-members]')) closeMembersPop();
@@ -3519,6 +3661,21 @@
       }
       if (d.fileOpen) return await openFileSmart(d.fileOpen);
       if (d.fileMenu) return fileMenu(t, d.fileMenu);
+      // 交付验收清单：「待你确认」的项点通过 / 不通过（再点一次取消）；「批准清理…」只把话放进输入框，不会删任何东西
+      if (d.acceptVote || 'acceptClean' in d) {
+        const box = t.closest('[data-accept]');
+        const m = box && S.messages.find((x) => x.id === box.dataset.accept);
+        if (!m || !m.acceptance) return;
+        if ('acceptClean' in d) {
+          const a = agentById(m.from);
+          return insertIntoComposer(
+            tr('@{name} 可以清理这些构建中间产物：{files}。只删这些，删完列出删掉了什么。', { name: a ? a.name : m.name, files: m.acceptance.cleanup.join(tr('、')) })
+          );
+        }
+        const it = m.acceptance.items.find((x) => x.id === d.acceptItem);
+        if (!it) return;
+        return await api('POST', `/api/rooms/${S.roomId}/messages/${m.id}/acceptance`, { item: it.id, verdict: it.u === d.acceptVote ? '' : d.acceptVote });
+      }
       if (d.fileLink !== undefined) {
         e.preventDefault();
         return await openFileSmart(d.fileLink);
@@ -3582,6 +3739,15 @@
       // 成员这一轮改了文件：右侧文件面板跟着刷新
       if (message.files && message.files.length) panel.onFiles(roomId, message.files);
       if (roomId === S.roomId) panel.onMessages();
+    });
+    // 已有的消息改了（交付验收清单上点了通过 / 不通过）：换掉那一条
+    on('message-update', ({ roomId, message }) => {
+      if (roomId !== S.roomId) return;
+      const i = S.messages.findIndex((x) => x.id === message.id);
+      if (i < 0) return;
+      S.messages[i] = message;
+      const node = $(`#transcript .msg[data-id="${CSS.escape(message.id)}"]`);
+      if (node) node.replaceWith(msgNode(message));
     });
     // 右侧面板：侧边对话和终端
     for (const name of ['side-message', 'side-progress', 'side-cleared', 'term', 'term-exit']) on(name, (data) => panel.onEvent(name, data));
