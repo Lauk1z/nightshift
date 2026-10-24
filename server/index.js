@@ -711,6 +711,15 @@ route('POST', '/api/rooms/:id/files/open', async (req, { params, body }) => {
   return { ok: true, path: full, revealed: how === 'open' && files.RUNNABLE.test(full) };
 });
 
+// 消息里提到的、不在任何项目文件夹里的文件：只能在文件夹中显示，不预览也不打开（免得一点就运行了什么）
+route('POST', '/api/files/reveal', async (req, { body }) => {
+  const full = files.absolutePath(body.path);
+  if (!full) throw bad(tr('只能显示完整路径的文件'));
+  if (!fs.existsSync(full)) throw bad(tr('找不到这个文件，可能已经被删除或改名了'));
+  files.openFile(full, 'reveal');
+  return { ok: true, path: full };
+});
+
 // ---------- 右侧面板：文件 ----------
 route('GET', '/api/rooms/:id/tree', async (req, { params, query }) => {
   const room = needRoom(params.id);

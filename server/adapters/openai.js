@@ -195,6 +195,55 @@ function safeRel(cwd, p) {
   }
 }
 
+// ---------- DeepSeek 的 DSML ----------
+// DeepSeek 新一代模型的工具调用格式。接口一般会把它转成 tool_calls，但有的接口（或者模型偶尔）会把它原样写在正文里：
+//   <｜DSML｜function_calls>
+//   <｜DSML｜invoke name="write_file">
+//   <｜DSML｜parameter name="path" string="true">docs/a.md</｜DSML｜parameter>
+//   <｜DSML｜parameter name="content" string="true">你好</｜DSML｜parameter>
+//   </｜DSML｜invoke>
+//   </｜DSML｜function_calls>
+// string="false" 的值是 JSON。不认出来的话，这一轮看上去像是回答了，其实一个工具也没执行。
+// 竖线有全角（｜）和半角（|）两种写法都认
+const B = '[｜|]';
+const DSML_START = new RegExp(`<${B}DSML${B}function_calls>`);
+const DSML_MARKS = ['<｜DSML｜function_calls>', '<|DSML|function_calls>'];
+
+// 返回 { found, text（去掉 DSML 后的正文）, calls: [{ name, args }] }
+function parseDsml(content) {
+  const s = String(content || '');
+  const start = s.search(DSML_START);
+  if (start < 0) return { found: false, text: s, calls: [] };
+  const invokeRe = new RegExp(`<${B}DSML${B}invoke\\s+name="([^"]+)"\\s*>([\\s\\S]*?)<\\/${B}DSML${B}invoke>`, 'g');
+  const paramRe = new RegExp(`<${B}DSML${B}parameter\\s+name="([^"]+)"(?:\\s+string="(true|false)")?\\s*>([\\s\\S]*?)<\\/${B}DSML${B}parameter>`, 'g');
+  const calls = [];
+  for (const m of s.slice(start).matchAll(invokeRe)) {
+    const args = {};
+    for (const p of m[2].matchAll(paramRe)) {
+      let v = p[3];
+      if (p[2] === 'false') {
+        try {
+          v = JSON.parse(v);
+        } catch {}
+      }
+      args[p[1]] = v;
+    }
+    calls.push({ name: m[1], args });
+  }
+  // 去掉所有 DSML 段（最后一段可能没写完）
+  const blockRe = new RegExp(`<${B}DSML${B}function_calls>[\\s\\S]*?(?:<\\/${B}DSML${B}function_calls>|$)`, 'g');
+  return { found: true, text: s.replace(blockRe, '').replace(/\n{3,}/g, '\n\n').trim(), calls };
+}
+
+// 正文里能给人看的部分有多长：DSML 开始的地方截断；还在流式输出时，末尾半个标记（比如「<｜DS」）先不显示
+function visibleLength(s, final) {
+  const i = s.search(DSML_START);
+  if (i >= 0) return i;
+  if (final) return s.length;
+  const j = s.lastIndexOf('<');
+  return j >= 0 && DSML_MARKS.some((m) => m.startsWith(s.slice(j))) ? j : s.length;
+}
+
 async function readSse(res, emit, onChunk) {
   const reader = res.body.getReader();
   const dec = new TextDecoder();
@@ -270,10 +319,17 @@ async function chat({ url, key, body, signal, emit }) {
     out.calls = (msg.tool_calls || []).map((t) => ({ id: t.id, name: t.function && t.function.name, args: (t.function && t.function.arguments) || '' }));
     out.finish = ch.finish_reason;
     out.usage = apiUsage(j.usage);
-    if (out.content) emit({ type: 'delta', text: out.content });
+    const shown = out.content.slice(0, visibleLength(out.content, true));
+    if (shown) emit({ type: 'delta', text: shown });
     return out;
   }
   const calls = [];
+  let shown = 0; // 已经流到界面上的字数（DSML 不流出去）
+  const flush = (final) => {
+    const end = visibleLength(out.content, final);
+    if (end > shown) emit({ type: 'delta', text: out.content.slice(shown, end) });
+    shown = Math.max(shown, end);
+  };
   await readSse(res, emit, (j) => {
     if (j.usage) out.usage = apiUsage(j.usage);
     const ch = j.choices && j.choices[0];
@@ -281,7 +337,7 @@ async function chat({ url, key, body, signal, emit }) {
     const d = ch.delta || {};
     if (d.content) {
       out.content += d.content;
-      emit({ type: 'delta', text: d.content });
+      flush(false);
     }
     const r = d.reasoning_content || d.reasoning;
     if (r) {
@@ -297,6 +353,7 @@ async function chat({ url, key, body, signal, emit }) {
     }
     if (ch.finish_reason) out.finish = ch.finish_reason;
   });
+  flush(true);
   out.calls = calls.filter(Boolean);
   return out;
 }
@@ -308,6 +365,7 @@ module.exports = {
   },
   stateless: true,
   apiUsage,
+  parseDsml,
   detect: async () => ({ installed: true }),
   run({ agent, cwd, apiMessages, emit }) {
     const ac = new AbortController();
@@ -340,6 +398,17 @@ module.exports = {
           emit({ type: 'text_start' });
           const r = await chat({ url, key: api.apiKey, body, signal: ac.signal, emit });
           if (r.usage) addUsage(usage, agent.model, r.usage);
+          // 工具调用写成了 DSML 文字：解析出来照样执行；看不懂的报错，不能当成已经回答了
+          const dsml = parseDsml(r.content);
+          if (dsml.found) {
+            r.content = dsml.text;
+            if (!r.calls.length) {
+              if (!dsml.calls.length) {
+                return { text: dsml.text, error: tr('模型把工具调用写成了文字（DeepSeek 的 DSML 格式），但内容不完整，这一轮没有执行任何操作。'), model: agent.model, usage };
+              }
+              r.calls = dsml.calls.map((c) => ({ id: '', name: c.name, args: JSON.stringify(c.args) }));
+            }
+          }
           if (!r.calls.length) return { text: r.content, model: agent.model, usage };
           if (r.content.trim()) emit({ type: 'text', text: r.content });
           const assistant = {

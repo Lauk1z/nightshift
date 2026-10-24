@@ -1195,11 +1195,33 @@
     return ws.replace(/[\\/]+$/, '') + sep + String(rel).replace(/[\\/]+/g, sep);
   }
 
-  const fileUrl = (rel) => `/files/${encodeURIComponent(S.roomId)}/${rel.split('/').map(encodeURIComponent).join('/')}`;
+  // roomId：别的项目里的文件借那个项目的会话来读（见 locate）；不传（或空）就是当前会话
+  const fileUrl = (rel, roomId) => `/files/${encodeURIComponent(roomId || S.roomId)}/${rel.split('/').map(encodeURIComponent).join('/')}`;
 
+  // 消息里的路径在哪：当前项目的，返回相对路径；在别的项目文件夹里的，借那个项目的一个会话来读（服务端只给项目文件夹里的文件）；
+  // 哪个项目都不在的，outside 为 true，只能在文件夹中显示。full 是完整路径（/ 分隔）
+  function locate(p) {
+    const rel = toRel(p);
+    if (!/^([A-Za-z]:\/|\/)/.test(rel)) return { rel };
+    const low = rel.toLowerCase();
+    let best = null;
+    for (const proj of S.projects) {
+      const ws = String(proj.workspace || '').replace(/\\/g, '/').replace(/\/+$/, '');
+      if (ws && low.startsWith(ws.toLowerCase() + '/') && (!best || ws.length > best.ws.length)) best = { proj, ws };
+    }
+    if (best && best.proj.rooms.length) return { rel: rel.slice(best.ws.length + 1), roomId: best.proj.rooms[0].id, project: best.proj.name, full: rel };
+    return { rel, outside: true, project: best ? best.proj.name : '', full: rel };
+  }
+
+  // p：路径，或者 locate 的结果
   async function fileAction(p, how) {
+    const loc = typeof p === 'string' ? locate(p) : p;
     try {
-      const r = await api('POST', `/api/rooms/${S.roomId}/files/open`, { path: toRel(p), how });
+      if (loc.outside) {
+        await api('POST', '/api/files/reveal', { path: loc.full });
+        return;
+      }
+      const r = await api('POST', `/api/rooms/${loc.roomId || S.roomId}/files/open`, { path: loc.rel, how });
       if (r.revealed) toast(tr('这是能直接运行的文件，为了安全，先在文件夹里把它找出来'));
     } catch (e) {
       toast(e.message, true);
@@ -1236,16 +1258,18 @@
   // Word、Excel、PPT、压缩包这类在这里看不了，还是交给系统里对应的程序
   const OPEN_OUTSIDE = ['word', 'sheet', 'slide', 'archive'];
   function openFileSmart(p) {
-    const rel = toRel(p);
-    const t = fileType(rel);
-    if (t.kind === 'exec' && !t.preview) return fileAction(rel, 'reveal');
-    if (OPEN_OUTSIDE.includes(t.kind) && !t.preview) return fileAction(rel, 'open');
-    return previewFile(rel);
+    const loc = locate(p);
+    const t = fileType(loc.rel);
+    if (t.kind === 'exec' && !t.preview) return fileAction(loc, 'reveal');
+    if (OPEN_OUTSIDE.includes(t.kind) && !t.preview) return fileAction(loc, 'open');
+    return previewFile(loc);
   }
 
-  function previewFile(rel) {
+  // p：路径，或者 locate 的结果（别的项目里的、项目外的文件，面板会说明它在哪）
+  function previewFile(p) {
     if (!S.roomId) return;
-    panel.openFile(toRel(rel));
+    const loc = typeof p === 'string' ? locate(p) : p;
+    panel.openFile(loc.rel, loc);
   }
 
   // 小菜单（「打开方式」、标题栏菜单、右键菜单）。

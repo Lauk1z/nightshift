@@ -60,16 +60,26 @@ function diff(before, after, root) {
   return out.sort((x, y) => order[x.change] - order[y.change] || x.path.localeCompare(y.path)).slice(0, 60);
 }
 
-// 把界面传来的路径（相对路径、绝对路径、AI 写的 /E:/x/y.html、file:// 链接、带 :行号 的）解析成项目里的真实路径。
-// 跑出项目文件夹的一律返回 null。
-function resolveInside(root, p) {
+// 界面传来的路径（相对路径、绝对路径、AI 写的 /E:/x/y.html、file:// 链接、带 :行号 的）先清理成普通路径
+function cleanPath(p) {
   let s = String(p || '').trim().replace(/^<|>$/g, '');
   s = s.replace(/^file:\/\/\/?/i, '');
   try {
     s = decodeURIComponent(s);
   } catch {}
   s = s.replace(/^\/([A-Za-z]:[\\/])/, '$1');
-  s = s.replace(/#.*$/, '').replace(/:\d+(?::\d+)?$/, '');
+  return s.replace(/#.*$/, '').replace(/:\d+(?::\d+)?$/, '');
+}
+
+// 本机上的完整路径（不管在不在项目文件夹里）；相对路径不认，返回 null
+function absolutePath(p) {
+  const s = cleanPath(p);
+  return s && path.isAbsolute(s) ? path.resolve(s) : null;
+}
+
+// 解析成项目里的真实路径。跑出项目文件夹的一律返回 null。
+function resolveInside(root, p) {
+  const s = cleanPath(p);
   if (!s) return null;
   const base = path.resolve(root);
   const full = path.resolve(base, s);
@@ -178,4 +188,4 @@ function openFile(full, how) {
   else detach(process.platform === 'darwin' ? 'open' : 'xdg-open', [full]);
 }
 
-module.exports = { snapshot, diff, resolveInside, openFile, listDir, findFiles, RUNNABLE };
+module.exports = { snapshot, diff, resolveInside, absolutePath, openFile, listDir, findFiles, RUNNABLE };

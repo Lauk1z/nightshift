@@ -2680,6 +2680,14 @@ body.resizing .term-host {
   width: 48px;
   height: 48px;
 }
+/* 项目外的文件：完整路径，可以选中复制 */
+.pv-empty .pv-path {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--faint);
+  overflow-wrap: anywhere;
+  user-select: text;
+}
 .row.center {
   flex-wrap: wrap;
   justify-content: center;
@@ -2861,6 +2869,11 @@ body.resizing .term-host {
 .fpv-title small {
   font-size: 11.5px;
   color: var(--graphite);
+}
+/* 预览的是别的项目里的文件：项目名醒目一点 */
+.fpv-title .fpv-proj {
+  color: var(--ink-2);
+  font-weight: 600;
 }
 .mini-seg {
   display: inline-flex;

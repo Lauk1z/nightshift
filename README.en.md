@@ -267,7 +267,7 @@ When a member creates or edits files in a turn, file cards appear at the bottom 
 - Click a card to preview it in the side panel's Files page (web pages, Markdown, code, text, images, PDFs and more). Word, Excel, PowerPoint files and archives open in their default app.
 - The "Open with" menu has: open with default app, open with another app (Windows' "How do you want to open this file?"), show in folder, and copy file path.
 - Files that run when double-clicked, such as `.exe` and `.bat`, are only shown in their folder when you "open" them, for safety.
-- File links in messages, such as `[index.html](/E:/test/index.html)`, can be clicked too.
+- File links in messages, such as `[index.html](/E:/test/index.html)`, can be clicked too. A link to a file in another project's folder still previews, with the project named under the file name. A file that isn't in any project can't be previewed; you get the reason plus "Show in folder" and "Copy full path".
 - Web page previews run in a sandbox, so scripts in the page can't control Nightshift.
 
 Dependencies and build output (`node_modules`, `dist`, `build` and so on) and folders starting with `.` never show up as cards.
@@ -335,6 +335,8 @@ Choose **API model** when you click "Add member", then:
 2. Enter the API key and the model name
 
 API models can't read or write files on their own, so Nightshift gives them a set of file tools that only work inside the project folder. This needs a model that supports tool calls (function calling). If yours doesn't, uncheck "Let it read and write project files" in the member's settings and it will only take part in the discussion.
+
+DeepSeek's newer models sometimes write their tool calls as plain text (the DSML format, like `<｜DSML｜function_calls>`) that the API didn't turn into real tool calls. Nightshift recognizes these and runs them anyway, without showing the markup. If the markup is incomplete, the turn is reported as an error instead of being treated as a finished reply.
 
 ## Data and privacy
 

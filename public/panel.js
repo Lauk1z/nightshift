@@ -404,23 +404,31 @@ window.createPanel = function createPanel(ctx) {
       return t.preview === 'html' || t.preview === 'md' ? 'preview' : 'source';
     }
 
-    function open(rel) {
+    // loc：app.js 的 locate 算出来的。别的项目里的文件（loc.roomId）借那个项目的会话来读；
+    // 哪个项目都不在的（loc.outside）没法预览，只说明它在哪
+    function open(rel, loc) {
       const s = st();
       if (!s) return;
       const t = fileType(rel);
       s.file = rel;
+      s.loc = loc && (loc.outside || (loc.roomId && loc.roomId !== S.roomId)) ? loc : null;
       s.mode = defaultMode(t);
       s.ver++;
-      // 在树里也展开到这个文件
-      const parts = rel.split('/');
-      for (let i = 1; i < parts.length; i++) s.expanded.add(parts.slice(0, i).join('/'));
+      // 当前项目的文件：在树里也展开到它
+      if (!s.loc) {
+        const parts = rel.split('/');
+        for (let i = 1; i < parts.length; i++) s.expanded.add(parts.slice(0, i).join('/'));
+      }
       if (P.tab !== 'files' || !P.open) show('files');
       else renderPreview();
     }
 
     function close() {
       const s = st();
-      if (s) s.file = null;
+      if (s) {
+        s.file = null;
+        s.loc = null;
+      }
       renderList();
     }
 
@@ -445,28 +453,44 @@ window.createPanel = function createPanel(ctx) {
       $('#fList').hidden = true;
       box.hidden = false;
       const rel = s.file;
+      const loc = s.loc;
       const t = fileType(rel);
-      const info = changes().get(rel);
+      const info = loc ? null : changes().get(rel);
       const dir = parentOf(rel);
-      const modes = t.preview === 'html' || t.preview === 'md';
+      const modes = !(loc && loc.outside) && (t.preview === 'html' || t.preview === 'md');
+      // 文件名下面一行：在哪个文件夹（别的项目里的标出项目名，项目外的写完整路径）
+      const where = loc
+        ? loc.outside
+          ? esc(fullPath(dir))
+          : `<span class="fpv-proj">${esc(tr('项目「{name}」', { name: loc.project }))}</span> · ${esc(dir || tr('项目根目录'))}`
+        : `${esc(dir || tr('项目根目录'))}${info ? ` · <span class="tree-by" style="--c:${info.color}">${esc(changedAt(info))}</span>` : ''}`;
       box.innerHTML = `
         <div class="pv-head fpv-head">
           <button type="button" class="icon-btn" data-f="back" title="${tr('返回文件列表')}" aria-label="${tr('返回文件列表')}">${ICONS.back}</button>
           <span class="tree-ico k-${t.kind}">${FILE_ICON[t.kind] || FILE_ICON.other}</span>
-          <div class="fpv-title"><b title="${esc(rel)}">${esc(baseName(rel))}</b><small>${esc(dir || tr('项目根目录'))}${
-            info ? ` · <span class="tree-by" style="--c:${info.color}">${esc(changedAt(info))}</span>` : ''
-          }</small></div>
+          <div class="fpv-title"><b title="${esc(loc ? fullPath(loc.full) : rel)}">${esc(baseName(rel))}</b><small>${where}</small></div>
           ${
             modes
               ? `<div class="mini-seg" role="group" aria-label="${tr('显示方式')}"><button type="button" data-f-mode="preview" aria-pressed="${s.mode === 'preview'}">${tr('预览')}</button><button type="button" data-f-mode="source" aria-pressed="${s.mode === 'source'}">${tr('源码')}</button></div>`
               : ''
           }
-          <button type="button" class="icon-btn" data-f="reload" title="${tr('重新读取')}" aria-label="${tr('重新读取')}">${ICONS.refresh}</button>
+          ${loc && loc.outside ? '' : `<button type="button" class="icon-btn" data-f="reload" title="${tr('重新读取')}" aria-label="${tr('重新读取')}">${ICONS.refresh}</button>`}
           <button type="button" class="icon-btn" data-f="menu" data-menu-anchor title="${tr('打开方式')}" aria-label="${tr('打开方式')}" aria-haspopup="menu">${ICONS.more}</button>
         </div>
         <div class="fpv-body" id="fBody"><div class="pv-empty"><p>${tr('正在打开……')}</p></div></div>`;
       const body = $('#fBody');
-      const url = `${fileUrl(rel)}?v=${s.ver}`;
+      // 不在任何项目里的文件：服务端不给读，这里说清楚原因，给出能做的事
+      if (loc && loc.outside) {
+        const why = loc.project
+          ? tr('这个文件在项目「{name}」的文件夹里，但那个项目还没有会话，暂时没法在这里预览。', { name: loc.project })
+          : tr('这个文件不在任何项目的文件夹里。Nightshift 只能预览项目文件夹里的文件，可以在文件夹中找到它。');
+        body.innerHTML = `<div class="pv-empty"><span class="file-icon k-${t.kind}">${FILE_ICON[t.kind] || FILE_ICON.other}</span>
+          <p>${esc(why)}</p><p class="pv-path">${esc(fullPath(loc.full))}</p>
+          <div class="row center"><button type="button" class="btn small primary" data-f="reveal-file">${tr('在文件夹中显示')}</button>
+          <button type="button" class="btn small" data-f="copy-path">${tr('复制完整路径')}</button></div></div>`;
+        return;
+      }
+      const url = `${fileUrl(rel, loc && loc.roomId)}?v=${s.ver}`;
       const stillHere = () => s.file === rel && S.roomId && $('#fBody') === body;
       try {
         if (t.preview === 'html' && s.mode === 'preview') {
@@ -519,9 +543,25 @@ window.createPanel = function createPanel(ctx) {
       }
     }
 
-    function menuFor(anchor, rel, isDir, at) {
+    function menuFor(anchor, rel, isDir, at, loc) {
       const t = fileType(rel);
       const items = [];
+      // 预览着的别的项目里的、项目外的文件：动作都按它自己的位置来，路径给完整的
+      if (loc) {
+        const full = fullPath(loc.full);
+        if (!loc.outside) {
+          if (t.preview === 'html') items.push({ label: tr('在浏览器标签中打开'), icon: ICONS.web, run: () => BROWSER.openFile(rel, loc) });
+          if (t.kind !== 'exec') items.push({ label: tr('用默认程序打开'), icon: ICONS.open, run: () => fileAction(loc, 'open') });
+          items.push({ label: tr('选择其他程序打开…'), icon: ICONS.apps, run: () => fileAction(loc, 'with') });
+        }
+        items.push(
+          { label: tr('在文件夹中显示'), icon: ICONS.folder, run: () => fileAction(loc, 'reveal') },
+          '-',
+          { label: tr('把路径插入输入框'), icon: ICONS.quote, run: () => insertIntoComposer(full) },
+          { label: tr('复制完整路径'), icon: ICONS.copy, run: () => copyText(full, tr('已复制路径')) }
+        );
+        return openMenu(anchor, items, at);
+      }
       if (isDir) {
         items.push(
           { label: tr('在文件管理器中打开'), icon: ICONS.open, run: () => fileAction(rel, 'open') },
@@ -569,13 +609,17 @@ window.createPanel = function createPanel(ctx) {
           s.ver++;
           return renderPreview();
         case 'menu':
-          return menuFor(t, s.file, false);
+          return menuFor(t, s.file, false, undefined, s.loc);
         case 'open':
-          return fileAction(s.file, fileType(s.file).kind === 'exec' ? 'reveal' : 'open');
+          return fileAction(s.loc || s.file, fileType(s.file).kind === 'exec' ? 'reveal' : 'open');
         case 'with':
-          return fileAction(s.file, 'with');
+          return fileAction(s.loc || s.file, 'with');
         case 'browser':
-          return BROWSER.openFile(s.file);
+          return BROWSER.openFile(s.file, s.loc);
+        case 'reveal-file':
+          return fileAction(s.loc || s.file, 'reveal');
+        case 'copy-path':
+          return copyText(fullPath(s.loc ? s.loc.full : s.file), tr('已复制路径'));
       }
     }
 
@@ -1385,10 +1429,11 @@ window.createPanel = function createPanel(ctx) {
       go(url);
     }
 
-    // 项目里的网页：桌面版直接用 file:// 打开（本地存储等都能用），浏览器版走预览地址
-    function openFile(rel) {
-      if (real) open('file:///' + fullPath(rel).replace(/\\/g, '/'));
-      else open(location.origin + fileUrl(rel));
+    // 项目里的网页：桌面版直接用 file:// 打开（本地存储等都能用），浏览器版走预览地址。
+    // loc：别的项目里的文件（见 app.js 的 locate），借那个项目的会话来读
+    function openFile(rel, loc) {
+      if (real) open('file:///' + (loc ? loc.full : fullPath(rel).replace(/\\/g, '/')));
+      else open(location.origin + fileUrl(rel, loc && loc.roomId));
     }
 
     function setUrl(url) {
@@ -1524,7 +1569,7 @@ window.createPanel = function createPanel(ctx) {
     hide,
     toggle,
     state: () => ({ ...P }),
-    openFile: (rel) => FILES.open(rel),
+    openFile: (rel, loc) => FILES.open(rel, loc),
     openUrl: (url) => BROWSER.open(url),
     openHtmlInBrowser: (rel) => BROWSER.openFile(rel),
     onRoom() {

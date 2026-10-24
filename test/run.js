@@ -424,6 +424,112 @@ test('API 模型的文件工具不能跑出项目文件夹', async () => {
   assert.match(out.text, /只能访问项目文件夹以内的路径/);
 });
 
+// ---- DeepSeek 把工具调用写成 DSML 文字（实际遇到过：两轮「审查」只有这段文字，什么也没执行） ----
+test('API 模型：解析 DeepSeek 的 DSML 工具调用（全角、半角竖线，string="false" 是 JSON，没写完的去掉）', () => {
+  const { parseDsml } = require('../server/adapters/openai');
+  const full = [
+    '我先看看文件。',
+    '<｜DSML｜function_calls>',
+    '<｜DSML｜invoke name="read_file">',
+    '<｜DSML｜parameter name="path" string="true">src/app.js</｜DSML｜parameter>',
+    '</｜DSML｜invoke>',
+    '<｜DSML｜invoke name="list_files">',
+    '<｜DSML｜parameter name="path" string="true">.</｜DSML｜parameter>',
+    '<｜DSML｜parameter name="recursive" string="false">true</｜DSML｜parameter>',
+    '</｜DSML｜invoke>',
+    '</｜DSML｜function_calls>',
+  ].join('\n');
+  const a = parseDsml(full);
+  assert.strictEqual(a.found, true);
+  assert.strictEqual(a.text, '我先看看文件。');
+  assert.deepStrictEqual(a.calls, [
+    { name: 'read_file', args: { path: 'src/app.js' } },
+    { name: 'list_files', args: { path: '.', recursive: true } },
+  ]);
+  // 半角竖线；字符串值原样保留（换行、引号都不动）
+  const b = parseDsml('<|DSML|function_calls>\n<|DSML|invoke name="write_file">\n<|DSML|parameter name="path" string="true">a.md</|DSML|parameter>\n<|DSML|parameter name="content" string="true">第一行\n"第二行"</|DSML|parameter>\n</|DSML|invoke>\n</|DSML|function_calls>');
+  assert.deepStrictEqual(b.calls, [{ name: 'write_file', args: { path: 'a.md', content: '第一行\n"第二行"' } }]);
+  assert.strictEqual(b.text, '');
+  // 只写了个开头：认出来了，但没有能执行的调用
+  const c = parseDsml('好的。\n<｜DSML｜function_calls>\n<｜DSML｜invoke name="read_');
+  assert.deepStrictEqual([c.found, c.text, c.calls.length], [true, '好的。', 0]);
+  assert.strictEqual(parseDsml('普通回答，提到 DSML 这个词也没关系').found, false);
+});
+
+test('API 模型：正文里的 DSML 照样执行，界面上不显示那段标记；看不懂的报错', async () => {
+  let calls = 0;
+  const srv = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (d) => (body += d));
+    req.on('end', () => {
+      const j = JSON.parse(body);
+      calls++;
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      const send = (o) => res.write('data: ' + JSON.stringify(o) + '\n\n');
+      if (calls === 1) {
+        // 标记被拆在两段里流过来
+        send({ choices: [{ delta: { content: '我来写文件。\n<｜DS' } }] });
+        send({ choices: [{ delta: { content: 'ML｜function_calls>\n<｜DSML｜invoke name="write_file">\n<｜DSML｜parameter name="path" string="true">docs/a.md</｜DSML｜parameter>\n' } }] });
+        send({ choices: [{ delta: { content: '<｜DSML｜parameter name="content" string="true">你好</｜DSML｜parameter>\n</｜DSML｜invoke>\n</｜DSML｜function_calls>' }, finish_reason: 'stop' }] });
+      } else {
+        // 第二次请求：上一轮按正常的 tool_calls 和工具结果发回去
+        const asst = j.messages.find((m) => m.role === 'assistant');
+        assert.strictEqual(asst.content, '我来写文件。');
+        assert.deepStrictEqual(JSON.parse(asst.tool_calls[0].function.arguments), { path: 'docs/a.md', content: '你好' });
+        assert.match(j.messages.find((m) => m.role === 'tool').content, /已写入 docs\/a\.md/);
+        send({ choices: [{ delta: { content: '写好了。' }, finish_reason: 'stop' }] });
+      }
+      res.end('data: [DONE]\n\n');
+    });
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  const ws = tmp();
+  const events = [];
+  const run = (port) =>
+    adapters.get('openai').run({
+      agent: { name: 'DS', model: 'deepseek-v4', permission: 'edit', api: { baseUrl: `http://127.0.0.1:${port}/v1` } },
+      cwd: ws,
+      apiMessages: [{ role: 'user', content: 'u' }],
+      emit: (e) => events.push(e),
+    });
+  const out = await run(srv.address().port).done;
+  srv.close();
+  assert.strictEqual(out.error, undefined);
+  assert.strictEqual(out.text, '写好了。');
+  assert.strictEqual(fs.readFileSync(path.join(ws, 'docs', 'a.md'), 'utf8'), '你好');
+  assert.ok(events.some((e) => e.type === 'tool' && e.item.k === 'write'));
+  const streamed = events.filter((e) => e.type === 'delta').map((e) => e.text).join('');
+  assert.doesNotMatch(streamed, /DSML|<｜/);
+  assert.match(streamed, /^我来写文件。/);
+
+  // DSML 只写了一半：报错，不能当成已经回答了
+  const bad = http.createServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ choices: [{ message: { content: '我来审查。\n<｜DSML｜function_calls>\n<｜DSML｜invoke name="read' }, finish_reason: 'length' }] }));
+    });
+  });
+  await new Promise((r) => bad.listen(0, '127.0.0.1', r));
+  const out2 = await run(bad.address().port).done;
+  bad.close();
+  assert.match(out2.error, /DSML/);
+  assert.strictEqual(out2.text, '我来审查。');
+});
+
+test('项目外的文件：只认完整路径，不存在的不显示', () => {
+  const { absolutePath } = require('../server/files');
+  const dir = tmp();
+  assert.strictEqual(absolutePath('docs/a.md'), null);
+  assert.strictEqual(absolutePath(''), null);
+  assert.strictEqual(absolutePath(path.join(dir, 'a.md')), path.join(dir, 'a.md'));
+  if (process.platform === 'win32') {
+    // AI 常写成 /C:/x/y.md、file:/// 链接、带 :行号
+    assert.strictEqual(absolutePath('/C:/Users/x/report.md:12'), 'C:\\Users\\x\\report.md');
+    assert.strictEqual(absolutePath('file:///C:/Users/x/a%20b.md'), 'C:\\Users\\x\\a b.md');
+  }
+});
+
 // ---- 每个成员单独的模型和思考强度 ----
 const models = require('../server/models');
 
@@ -1099,6 +1205,9 @@ test('设置和用量接口；换了语言，服务端的报错和 boot.js 跟�
     assert.strictEqual((await call('PATCH', '/api/settings', { language: 'klingon' })).json().language, 'en');
     const env = (await call('GET', '/api/env')).json();
     assert.strictEqual(env.adapters.openai.label, 'API model');
+    // 消息里提到的项目外文件只能「在文件夹中显示」：相对路径、不存在的都拒绝（这里不测存在的，免得真的弹出资源管理器）
+    assert.strictEqual((await call('POST', '/api/files/reveal', { path: 'docs/a.md' })).status, 400);
+    assert.match((await call('POST', '/api/files/reveal', { path: path.join(tmp(), 'nope.md') })).json().error, /Can't find this file|找不到这个文件/);
     // 英文界面的使用说明是 README.en.md，去掉了只给 GitHub 看的图标和截图
     const help = (await call('GET', '/api/readme')).json().text;
     assert.match(help, /^# Nightshift\n/);

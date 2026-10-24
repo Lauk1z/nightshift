@@ -748,5 +748,10 @@
   "详情在日志里：": "Details are in the log: ",
   "正在安装更新……": "Installing update…",
   "停止并更新": "Stop and update",
-  "更新要重启 {app}，会停止它们手上的工作。确定现在更新吗？": "Updating restarts {app}, which will stop what they're doing. Update now?"
+  "更新要重启 {app}，会停止它们手上的工作。确定现在更新吗？": "Updating restarts {app}, which will stop what they're doing. Update now?",
+  "项目「{name}」": "Project \"{name}\"",
+  "这个文件在项目「{name}」的文件夹里，但那个项目还没有会话，暂时没法在这里预览。": "This file is in the folder of project \"{name}\", but that project has no chats yet, so it can't be previewed here.",
+  "这个文件不在任何项目的文件夹里。Nightshift 只能预览项目文件夹里的文件，可以在文件夹中找到它。": "This file isn't in any project's folder. Nightshift can only preview files in project folders; you can find it in its folder instead.",
+  "只能显示完整路径的文件": "Only files with a full path can be shown",
+  "模型把工具调用写成了文字（DeepSeek 的 DSML 格式），但内容不完整，这一轮没有执行任何操作。": "The model wrote its tool calls as text (DeepSeek's DSML format), but they were incomplete, so nothing was run this turn."
 }
