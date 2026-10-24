@@ -183,6 +183,8 @@
     chev: I('<path d="M6 3.5L10.5 8 6 12.5"/>', 'chev'),
     folder: I('<path d="M1.8 4.2c0-.7.5-1.2 1.2-1.2h3.2l1.5 1.6h5.3c.7 0 1.2.5 1.2 1.2v6.6c0 .7-.5 1.2-1.2 1.2H3c-.7 0-1.2-.5-1.2-1.2z"/>'),
     gear: I('<circle cx="8" cy="8" r="2.3"/><path d="M8 1.8v1.7M8 12.5v1.7M14.2 8h-1.7M3.5 8H1.8M12.4 3.6l-1.2 1.2M4.8 11.2l-1.2 1.2M12.4 12.4l-1.2-1.2M4.8 4.8L3.6 3.6"/>'),
+    // 插头（左下角本机 AI 工具的状态）：两个插脚朝右上，线往左下
+    plug: I('<g transform="rotate(45 8 8)"><path d="M6.2 1.6v2.9M9.8 1.6v2.9"/><path d="M4.3 4.5h7.4v2.6a3.7 3.7 0 01-7.4 0z"/><path d="M8 10.8v4.4"/></g>'),
     menu: I('<path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11"/>'),
     up: I('<path d="M8 13V3M3.5 7.5L8 3l4.5 4.5"/>'),
     chevDown: I('<path d="M4.5 6.2L8 9.7l3.5-3.5"/>', 'chev-down'),
@@ -1415,35 +1417,92 @@
   // opts.align = 'left'：和按钮左对齐；opts.x / opts.y：在鼠标位置弹出（右键菜单）
   let menuEl = null;
   let menuAnchor = null;
+  let flyEl = null; // 鼠标停在某一项上时旁边展开的子菜单（比如成员的模型），同一时间只有一个
+  let flyTimer = null;
+  function closeFlyout() {
+    clearTimeout(flyTimer);
+    if (flyEl) flyEl.remove();
+    flyEl = null;
+  }
   function closeMenu() {
+    closeFlyout();
     if (menuEl) menuEl.remove();
     menuEl = null;
     menuAnchor = null;
   }
-  // opts.width：菜单宽度（比如和左下角的账户那一行一样宽）；opts.above：优先在按钮上方弹出
-  // 菜单项 header: true 是最上面那行灰色的小字（Claude 的菜单在那里写邮箱），不能点
-  function openMenu(anchor, items, opts = {}) {
-    // 再点一次同一个按钮就是收起
-    if (menuEl && menuAnchor === anchor && opts.x === undefined && !opts.force) return closeMenu();
-    closeMenu();
-    const box = el(
-      `<div class="menu" role="menu">${items
-        .map((it, i) =>
-          it === '-'
-            ? '<hr>'
-            : it.header
-              ? `<div class="menu-head">${esc(it.label)}</div>`
-              : `<button type="button" role="menuitem" data-menu-i="${i}"${it.danger ? ' class="danger"' : ''}${it.disabled ? ' disabled' : ''}${it.checked ? ' aria-checked="true"' : ''}${
-                  it.title ? ` title="${esc(it.title)}"` : ''
-                }>${
+  // 菜单项 header: true 是最上面那行灰色的小字（Claude 的菜单在那里写邮箱），不能点；
+  // flyout：返回子菜单项（可以是 Promise），鼠标停上去或者按 → 时在旁边展开
+  const menuHtml = (items) =>
+    items
+      .map((it, i) =>
+        it === '-'
+          ? '<hr>'
+          : it.header
+            ? `<div class="menu-head">${esc(it.label)}</div>`
+            : `<button type="button" role="menuitem" data-menu-i="${i}"${it.danger ? ' class="danger"' : ''}${it.disabled ? ' disabled' : ''}${it.checked ? ' aria-checked="true"' : ''}${
+                it.flyout ? ' aria-haspopup="menu"' : ''
+              }${it.title ? ` title="${esc(it.title)}"` : ''}>${
                 // 有图标（比如成员头像）的项，勾放在最右边；没有图标的，勾放在图标的位置
                 it.icon || (it.checked ? ICONS.check : '<i class="menu-pad"></i>')
               }<span class="menu-label">${esc(it.label)}${it.desc ? `<small class="menu-desc">${esc(it.desc)}</small>` : ''}</span>${it.hint ? `<small>${esc(it.hint)}</small>` : ''}${
                 it.icon && it.checked ? `<span class="menu-check">${ICONS.check}</span>` : ''
-              }${it.sub ? `<span class="menu-sub">${ICONS.chev}</span>` : ''}</button>`
-        )
-        .join('')}</div>`
-    );
+              }${it.sub || it.flyout ? `<span class="menu-sub">${ICONS.chev}</span>` : ''}</button>`
+      )
+      .join('');
+  // 点了菜单里的一项：先收起（连同子菜单），再执行
+  function runMenuItem(it) {
+    closeMenu();
+    try {
+      const r = it.run();
+      if (r && r.catch) r.catch((err) => toast(err.message, true));
+    } catch (err) {
+      toast(err.message, true);
+    }
+  }
+  // 在 from（主菜单里的一项）旁边展开子菜单：右边放不下就放左边，和这一项顶端对齐
+  async function showFlyout(from, it, focus) {
+    if (flyEl && flyEl._from === from) {
+      if (focus) flyEl.querySelector('button:not(:disabled)')?.focus();
+      return;
+    }
+    closeFlyout();
+    const fly = el(`<div class="menu menu-fly" role="menu"><div class="menu-head">${esc(tr('正在读取……'))}</div></div>`);
+    fly._from = from;
+    flyEl = fly;
+    document.body.append(fly);
+    const place = () => {
+      const p = from.closest('.menu').getBoundingClientRect();
+      const r = from.getBoundingClientRect();
+      let left = p.right + 4;
+      if (left + fly.offsetWidth > window.innerWidth - 8) left = Math.max(8, p.left - fly.offsetWidth - 4);
+      fly.style.left = left + 'px';
+      fly.style.top = Math.max(8, Math.min(r.top - 5, window.innerHeight - fly.offsetHeight - 8)) + 'px';
+    };
+    place();
+    fly.addEventListener('mouseover', () => clearTimeout(flyTimer));
+    let list;
+    try {
+      list = await it.flyout();
+    } catch (err) {
+      list = [{ label: err.message, header: true }];
+    }
+    if (flyEl !== fly) return; // 已经换成别的项的子菜单了
+    fly.innerHTML = menuHtml(list);
+    fly._items = list;
+    place();
+    fly.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-menu-i]');
+      if (b && !b.disabled) runMenuItem(list[Number(b.dataset.menuI)]);
+    });
+    if (focus) fly.querySelector('button:not(:disabled)')?.focus();
+  }
+  // opts.width：菜单宽度（比如和左下角的账户那一行一样宽）；opts.above：优先在按钮上方弹出
+  function openMenu(anchor, items, opts = {}) {
+    // 再点一次同一个按钮就是收起
+    if (menuEl && menuAnchor === anchor && opts.x === undefined && !opts.force) return closeMenu();
+    closeMenu();
+    const box = el(`<div class="menu" role="menu">${menuHtml(items)}</div>`);
+    box._items = items;
     if (opts.width) box.style.width = Math.max(210, opts.width) + 'px';
     document.body.append(box);
     let top;
@@ -1465,15 +1524,15 @@
     box.style.left = left + 'px';
     box.addEventListener('click', (e) => {
       const b = e.target.closest('[data-menu-i]');
-      if (!b || b.disabled) return;
+      if (b && !b.disabled) runMenuItem(items[Number(b.dataset.menuI)]);
+    });
+    // 鼠标停在带子菜单的项上一小会儿就展开；移到别的项上稍等一下再收起，斜着移进子菜单的路上不会被关掉
+    box.addEventListener('mouseover', (e) => {
+      const b = e.target.closest('[data-menu-i]');
+      if (!b || (flyEl && flyEl._from === b)) return clearTimeout(flyTimer);
       const it = items[Number(b.dataset.menuI)];
-      closeMenu();
-      try {
-        const r = it.run();
-        if (r && r.catch) r.catch((err) => toast(err.message, true));
-      } catch (err) {
-        toast(err.message, true);
-      }
+      clearTimeout(flyTimer);
+      flyTimer = setTimeout(() => (it.flyout && !b.disabled ? showFlyout(b, it) : closeFlyout()), it.flyout ? 140 : 260);
     });
     menuEl = box;
     menuAnchor = anchor;
@@ -1481,7 +1540,7 @@
     if (first) first.focus();
   }
   document.addEventListener('mousedown', (e) => {
-    if (menuEl && !menuEl.contains(e.target) && !(menuAnchor && menuAnchor.contains(e.target))) closeMenu();
+    if (menuEl && !menuEl.contains(e.target) && !(flyEl && flyEl.contains(e.target)) && !(menuAnchor && menuAnchor.contains(e.target))) closeMenu();
   });
   window.addEventListener('blur', () => closeMenu()); // 点到 webview、终端以外的地方也收起
   window.addEventListener('resize', () => closeMenu());
@@ -1495,9 +1554,21 @@
       return;
     }
     if (!menuEl) return;
-    const btns = [...menuEl.querySelectorAll('button:not(:disabled)')];
+    // 焦点在子菜单里时，上下键在子菜单里移动；← 或 Esc 回到主菜单那一项
+    const inFly = !!flyEl && flyEl.contains(document.activeElement);
+    const btns = [...(inFly ? flyEl : menuEl).querySelectorAll('button:not(:disabled)')];
     const i = btns.indexOf(document.activeElement);
-    if (e.key === 'Escape') {
+    const cur = document.activeElement && document.activeElement.closest ? document.activeElement.closest('[data-menu-i]') : null;
+    if (inFly && (e.key === 'Escape' || e.key === 'ArrowLeft')) {
+      e.stopPropagation();
+      e.preventDefault();
+      const from = flyEl._from;
+      closeFlyout();
+      if (from) from.focus();
+    } else if (e.key === 'ArrowRight' && !inFly && cur && menuEl.contains(cur) && menuEl._items[Number(cur.dataset.menuI)].flyout) {
+      e.preventDefault();
+      showFlyout(cur, menuEl._items[Number(cur.dataset.menuI)], true);
+    } else if (e.key === 'Escape') {
       e.stopPropagation();
       e.preventDefault();
       const a = menuAnchor;
@@ -1505,6 +1576,7 @@
       if (a && a.focus) a.focus();
     } else if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && btns.length) {
       e.preventDefault();
+      if (!inFly) closeFlyout(); // 主菜单里换到别的项：原来那一项的子菜单收起
       btns[(i + (e.key === 'ArrowDown' ? 1 : -1) + btns.length) % btns.length].focus();
     }
   }, true);
@@ -1931,7 +2003,8 @@
     updateSendBtn();
   }
 
-  // 输入框右下角的成员选择：列出这个项目里参与接力的成员，选中的就是项目的「默认接收人」（项目设置里也能改）
+  // 输入框右下角的成员选择：列出这个项目里参与接力的成员，选中的就是项目的「默认接收人」（项目设置里也能改）。
+  // 鼠标停在成员上，旁边列出它能用的模型，点一下就换（像 Claude 的模型选择）
   function toPicker(anchor) {
     const list = enabledAgents();
     const cur = (list.find((a) => a.id === S.room.settings.defaultAgent) || list[0] || {}).id;
@@ -1945,11 +2018,52 @@
           icon: `<span class="avatar sm" style="--c:${a.color}">${esc(initial(a.name))}</span>`,
           checked: a.id === cur,
           run: () => setDefaultAgent(a.id),
+          flyout: () => modelChoices(a),
         })),
         '-',
         { label: tr('添加成员'), icon: ICONS.plus, run: () => memberModal(null) },
       ],
       { align: 'right', above: true }
+    );
+  }
+
+  // 成员能换的模型：和成员设置里「模型」那一栏是同一份目录。API 模型的模型名要在成员设置里填
+  async function modelChoices(a) {
+    const head = { label: tr('{name} 用的模型', { name: a.name }), header: true };
+    const more = { label: tr('成员设置…'), icon: ICONS.gear, run: () => memberModal(agentById(a.id) || a) };
+    if (a.adapter === 'openai') {
+      return [head, { label: a.model || tr('还没有填写模型名称'), checked: !!a.model, disabled: true, run() {} }, '-', { ...more, label: tr('在成员设置里换模型…') }];
+    }
+    const cat = await loadCatalog(a.adapter);
+    const list = (cat.models || []).slice();
+    // 自己输入的模型名不在目录里，也列出来（打着勾）
+    if (a.model && !list.some((m) => m.id === a.model)) list.unshift({ id: a.model, label: a.model, note: tr('自己输入的') });
+    const tool = ADAPTERS[a.adapter] ? ADAPTERS[a.adapter].label : a.adapter;
+    const def = cat.defaultModel ? tr('默认（{model}）', { model: modelName(a.adapter, cat.defaultModel) }) : tr('默认（跟随 {tool} 自己的设置）', { tool });
+    return [
+      head,
+      { label: def, checked: !a.model, run: () => setAgentModel(a, '') },
+      ...list.map((m) => ({ label: m.label, desc: m.note && m.note !== m.label ? m.note : '', checked: a.model === m.id, run: () => setAgentModel(a, m.id) })),
+      ...(cat.error ? [{ label: cat.error, header: true }] : []),
+      '-',
+      more,
+    ];
+  }
+
+  // 换模型：只改模型这一项。原来的思考强度新模型不支持的话，一起改回默认（和成员设置里的规则一样）
+  async function setAgentModel(a, model) {
+    if ((a.model || '') === model) return;
+    const patch = { model };
+    const cat = S.catalogs[a.adapter];
+    if (a.effort && cat) {
+      const m = (cat.models || []).find((x) => x.id === (model || cat.defaultModel));
+      const levels = a.adapter === 'opencode' ? (model && m ? m.efforts || [] : []) : m && m.efforts && m.efforts.length ? m.efforts : cat.efforts || [];
+      if (!levels.includes(a.effort)) patch.effort = '';
+    }
+    await api('PATCH', `/api/rooms/${S.roomId}/agents/${a.id}`, patch);
+    toast(
+      tr('{name} 下一轮开始用 {model}', { name: a.name, model: model ? modelName(a.adapter, model) : tr('默认模型') }) +
+        (patch.effort === '' ? tr('（新模型不支持原来的思考强度，改回了默认）') : '')
     );
   }
 

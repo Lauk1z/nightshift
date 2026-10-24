@@ -167,17 +167,22 @@ window.createAccount = function createAccount(ctx) {
     const box = $('#envFoot');
     if (!box) return;
     const name = userName();
-    // 只画装好了的工具；还在检测时画三个灰点，一个都没装时画一个空心点
-    const states = !S.env ? ['wait', 'wait', 'wait'] : TOOLS.filter((id) => envOf(id).installed).map((id) => (envOf(id).outdated ? 'old' : 'ok'));
-    const dots = (states.length ? states : ['no']).map((s) => `<i class="tool-pip ${s}"></i>`).join('');
-    const ready = S.env ? TOOLS.filter((id) => envOf(id).installed && !envOf(id).outdated).length : 0;
+    // 本机 AI 工具的状态：一个插头（像 Claude 桌面版的连接器）。点开是每个工具的版本和「重新检测」。
+    // 有版本太旧的工具时右上角一个琥珀色的点，一个都没装时一个空心点；还在检测时插头一闪一闪
+    const installed = S.env ? TOOLS.filter((id) => envOf(id).installed) : [];
+    const old = installed.filter((id) => envOf(id).outdated).length;
+    const ready = installed.length - old;
+    const badge = !S.env ? '' : old ? '<i class="tool-badge old"></i>' : !installed.length ? '<i class="tool-badge no"></i>' : '';
+    const tip = !S.env
+      ? t('正在检测本机的 AI 工具……')
+      : old
+        ? t('本机能用的 AI 工具：{n} 个，另有 {old} 个版本太旧。点开看版本、重新检测', { n: ready, old })
+        : t('本机能用的 AI 工具：{n} 个。点开看版本、重新检测', { n: ready });
     box.innerHTML = `${updateCta()}<div class="acct-row">
       <button type="button" class="acct" data-acct aria-haspopup="menu" title="${esc(t('账户和设置'))}">
         <span class="avatar acct-av" style="--c:${userColor()}">${esc(initials(name))}</span>
         <span class="acct-name">${esc(name)}</span>${ICONS.chevDown}</button>
-      <button type="button" class="acct-tools" data-acct-tools aria-haspopup="menu" title="${esc(
-        S.env ? t('本机能用的 AI 工具：{n} 个。点开看版本、重新检测', { n: ready }) : t('正在检测本机的 AI 工具……')
-      )}">${dots}</button></div>`;
+      <button type="button" class="acct-tools${S.env ? '' : ' wait'}" data-acct-tools aria-haspopup="menu" title="${esc(tip)}" aria-label="${esc(tip)}">${ICONS.plug}${badge}</button></div>`;
   }
 
   function accountMenu(anchor) {

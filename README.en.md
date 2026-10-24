@@ -61,9 +61,9 @@ You also need at least one AI. Once a command-line tool is installed and signed 
 | DeepSeek Harness | `npm install -g @deepseek-ai/dsh` | Enter your DeepSeek API key in the member's settings, or set the `DEEPSEEK_API_KEY` environment variable |
 | API model | Nothing to install | Any service with an OpenAI-compatible API; enter its URL, key and model name |
 
-At the bottom left, the dots to the right of your name are the AI tools installed on this computer, one dot each: green means ready, amber means the version is too old. Click them to see each tool's version; clicking a tool that isn't installed copies its install command.
+At the bottom left, the plug icon to the right of your name shows the AI tools on this computer: click it to see whether each tool is ready and which version it is, and click a tool that isn't installed to copy its install command. An amber dot on the plug means a tool's version is too old; a hollow dot means no tools are installed.
 
-After installing or updating a tool, click "Re-detect" in that dots menu (it's also in the account menu). There's no need to restart Nightshift:
+After installing or updating a tool, click "Re-detect" in the plug menu (it's also in the account menu). There's no need to restart Nightshift:
 
 - It rereads the latest system PATH, so folders a new installer just added are found.
 - It reads each tool's `--help` and only passes the options and thinking-effort levels that version supports. A tool that's too old shows "Outdated" with a hint on how to update it.
@@ -128,11 +128,11 @@ When you upgrade from 0.7 or earlier, each old project becomes a project with on
 
 The interface follows the Claude desktop app: a near-black background (warm white in light mode), a darker sidebar next to a lighter chat area, content in rounded cards with thin borders, and the conversation in a centered column. It follows the system's light or dark setting unless you choose one in Settings.
 
-- **Sidebar**: search for projects and chats at the top, then "New project" and your projects. Click a project's name to expand or collapse its chats; each chat shows the time of its last message, or a blinking dot while a member is working, and pinned chats have a pin on the left. Hover over a project for + (new chat) and ⋯ (project settings, open in File Explorer, copy folder path, delete project); hover over a chat and its time turns into ⋯ (the chat's actions). Right-click shows the same menus. Projects and chats can be dragged into any order (see the previous section). At the bottom are your avatar and name (click for the account menu, see the next section), and the tool-status dots.
+- **Sidebar**: search for projects and chats at the top, then "New project" and your projects. Click a project's name to expand or collapse its chats; each chat shows the time of its last message, or a blinking dot while a member is working, and pinned chats have a pin on the left. Hover over a project for + (new chat) and ⋯ (project settings, open in File Explorer, copy folder path, delete project); hover over a chat and its time turns into ⋯ (the chat's actions). Right-click shows the same menus. Projects and chats can be dragged into any order (see the previous section). At the bottom are your avatar and name (click for the account menu, see the next section), and the plug icon for tool status.
 - **Members**: in the title bar, next to the chat name, are the chat's member avatars and how many there are; a working member's avatar has a pulsing ring. Click them for the members panel, one row per member: how it's connected (Claude Code, Codex…), its model, thinking effort and permissions, and whether it's working or queued. A member without its own model choice shows the tool's default model. Click a member to open its settings, or "Add member" to add another AI.
 - **Chat**: your messages are bubbles on the right; each member's reply has its avatar, name and role above it. Hover over a message for a "Copy" button; code blocks have their own "Copy" too.
 - **Conversation timeline**: a column of marks at the left edge of the chat (like in Codex), one per message you sent. The turn you're reading is the longest and brightest mark, and turns where a member hit an error are red. Move the mouse over the marks and the ones nearby grow like a magnifier, leaving a short trail that shrinks back as you move; a card next to them shows what you said, the last reply and which members took part, and slides along as you move. Click a mark to jump to that message. It appears once there are at least two turns, and hides when the chat area is too narrow.
-- **Message box**: one large rounded card. The @ and / buttons at the bottom left pick a member or a skill. At the bottom right is a member picker (like the model picker in Claude): messages that don't @mention anyone go to the member it shows, and you can click it to switch to another member of the chat, which is remembered. When your message @mentions someone, it shows who the message goes to instead. While a relay is running and the box is empty, the send button turns into a stop button (■); start typing and it's a send button again.
+- **Message box**: one large rounded card. The @ and / buttons at the bottom left pick a member or a skill. At the bottom right is a member picker (like the model picker in Claude): messages that don't @mention anyone go to the member it shows, and you can click it to switch to another member of the chat, which is remembered. Hover over a member to see the models it can use next to it, and click one to switch (it takes effect from the next turn). When your message @mentions someone, it shows who the message goes to instead. While a relay is running and the box is empty, the send button turns into a stop button (■); start typing and it's a send button again.
 - **Relay bar**: just above the message box, it shows where this relay has got to: solid dots are done, the working member blinks with moving stripes on its line, and hollow dots are queued.
 
 The window has no system title bar; the title bar blends into the interface (minimize, maximize and close are still the Windows buttons, and dragging, double-click to maximize and Snap layouts all work). From left to right:
@@ -326,6 +326,8 @@ Model lists come from each tool itself. If you change a tool's configuration, cl
 | API model | The API's `/models` (click "Fetch models") | `reasoning_effort` in the request; provider-specific switches go in "Extra request parameters" |
 
 "Default" means nothing extra is set and the tool's own setting is used. Each message records the model and thinking effort it used at the bottom.
+
+To change just the model, you don't need member settings: click the member picker at the bottom right of the message box and hover over a member to see its models. If the new model doesn't support the current thinking effort, it goes back to "Default".
 
 Notes:
 

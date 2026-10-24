@@ -935,7 +935,7 @@ body.sorting * {
   color: var(--graphite);
 }
 
-/* 侧边栏底部：你的头像和名字（点开是账户菜单），右边三个小点是本机 AI 工具的状态 */
+/* 侧边栏底部：你的头像和名字（点开是账户菜单），右边的插头是本机 AI 工具的状态 */
 .rail-foot {
   padding: 4px 8px 5px;
   border-top: 1px solid var(--rule-2);
@@ -988,18 +988,44 @@ body.sorting * {
   height: 14px;
   color: var(--graphite);
 }
+/* 本机 AI 工具的状态：一个插头。右上角的点：琥珀 = 有版本太旧的工具，空心 = 一个都没装 */
 .acct-tools {
-  display: inline-flex;
+  position: relative;
+  display: inline-grid;
   flex: none;
-  align-items: center;
-  gap: 4px;
+  place-items: center;
+  width: 32px;
   height: 30px;
-  padding: 0 9px;
+  padding: 0;
   border: 0;
   border-radius: 8px;
   background: none;
+  color: var(--ink-2);
 }
-/* 实心绿 = 能用，琥珀 = 版本太旧，空心 = 没装；点开的菜单里有文字说明 */
+.acct-tools svg {
+  width: 17px;
+  height: 17px;
+}
+.acct-tools.wait svg {
+  animation: pip-wait 1.2s ease-in-out infinite;
+}
+.tool-badge {
+  position: absolute;
+  top: 5px;
+  right: 6px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--amber);
+  box-shadow: 0 0 0 2px var(--paper);
+}
+.tool-badge.no {
+  background: var(--paper);
+  box-shadow:
+    inset 0 0 0 1.2px var(--faint),
+    0 0 0 2px var(--paper);
+}
+/* 菜单里每个工具前面的点：实心绿 = 能用，琥珀 = 版本太旧，空心 = 没装 */
 .tool-pip {
   display: inline-block;
   flex: none;
@@ -2688,6 +2714,14 @@ body.sorting * {
   display: inline-grid;
   flex: none;
   place-items: center;
+}
+.menu-sub svg {
+  color: var(--faint) !important;
+}
+/* 旁边展开的子菜单（比如成员的模型）：模型多的时候在里面滚动 */
+.menu.menu-fly {
+  z-index: 71;
+  max-height: min(440px, calc(100vh - 16px));
 }
 .menu-check svg {
   color: var(--ink) !important;

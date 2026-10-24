@@ -836,5 +836,12 @@
   "核对靠的是文件和命令的特征，难免看错。你确认这一项没问题，就点这里": "The check goes by files and commands, so it can get things wrong. Click here if you're sure this item is fine",
   "撤销": "Undo",
   "仍然通过": "Pass anyway",
-  "修改了 {n} 个原有文件：{files}，是有意改的就没问题": "Changed {n} existing {n|file|files}: {files}. Fine if that was intended"
+  "修改了 {n} 个原有文件：{files}，是有意改的就没问题": "Changed {n} existing {n|file|files}: {files}. Fine if that was intended",
+  "{name} 用的模型": "Model for {name}",
+  "成员设置…": "Member settings…",
+  "在成员设置里换模型…": "Change the model in member settings…",
+  "自己输入的": "Typed in",
+  "{name} 下一轮开始用 {model}": "{name} will use {model} from the next turn",
+  "（新模型不支持原来的思考强度，改回了默认）": " (the new model doesn't support the previous thinking effort, so it's back to default)",
+  "本机能用的 AI 工具：{n} 个，另有 {old} 个版本太旧。点开看版本、重新检测": "{n} AI {n|tool|tools} available on this computer, plus {old} with an outdated version. Click to see versions or re-detect"
 }
