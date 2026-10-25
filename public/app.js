@@ -182,6 +182,10 @@
     plus: I('<path d="M8 3v10M3 8h10"/>'),
     chev: I('<path d="M6 3.5L10.5 8 6 12.5"/>', 'chev'),
     folder: I('<path d="M1.8 4.2c0-.7.5-1.2 1.2-1.2h3.2l1.5 1.6h5.3c.7 0 1.2.5 1.2 1.2v6.6c0 .7-.5 1.2-1.2 1.2H3c-.7 0-1.2-.5-1.2-1.2z"/>'),
+    // 两个叠在一起的文件夹（新建项目）：后面那个往右上错开，只画露出来的部分
+    folders: I(
+      '<path d="M1.6 7.2c0-.66.54-1.2 1.2-1.2h2.4l1.3 1.3h3.7c.66 0 1.2.54 1.2 1.2v3.9c0 .66-.54 1.2-1.2 1.2H2.8c-.66 0-1.2-.54-1.2-1.2z"/><path d="M4.6 6V4.2c0-.66.54-1.2 1.2-1.2h2.4l1.3 1.3h3.7c.66 0 1.2.54 1.2 1.2v3.9c0 .66-.54 1.2-1.2 1.2h-1.8"/>'
+    ),
     gear: I('<circle cx="8" cy="8" r="2.3"/><path d="M8 1.8v1.7M8 12.5v1.7M14.2 8h-1.7M3.5 8H1.8M12.4 3.6l-1.2 1.2M4.8 11.2l-1.2 1.2M12.4 12.4l-1.2-1.2M4.8 4.8L3.6 3.6"/>'),
     // 插头（左下角本机 AI 工具的状态）：两个插脚朝右上，线往左下
     plug: I('<g transform="rotate(45 8 8)"><path d="M6.2 1.6v2.9M9.8 1.6v2.9"/><path d="M4.3 4.5h7.4v2.6a3.7 3.7 0 01-7.4 0z"/><path d="M8 10.8v4.4"/></g>'),
@@ -476,11 +480,13 @@
   const md = (text) => window.Markdown.render(text, { mention: highlightMentions });
 
   // ---------- 侧栏（像 Claude 桌面版：搜索、新建、两行的列表项） ----------
-  // 搜索框和「新建项目」只画一次，列表刷新时不会打断正在输入的搜索词
+  // 搜索框、「新建会话」和「新建项目」只画一次，列表刷新时不会打断正在输入的搜索词。
+  // 新建会话不用选文件夹，点一下就建好；新建项目要选一个文件夹
   function renderRailTop() {
     $('#railTop').innerHTML = `
       <label class="side-search">${ICONS.search}<input id="projSearch" type="search" placeholder="${tr('搜索项目和会话')}" autocomplete="off" spellcheck="false" aria-label="${tr('搜索项目和会话')}"></label>
-      <button type="button" class="nav-item" data-new-project><span class="nav-ico">${ICONS.plusCircle}</span>${tr('新建项目')}</button>`;
+      <button type="button" class="nav-item" data-new-standalone title="${tr('不用选文件夹，直接开始一个会话')}"><span class="nav-ico">${ICONS.plusCircle}</span>${tr('新建会话')}</button>
+      <button type="button" class="nav-item" data-new-project><span class="nav-ico">${ICONS.folders}</span>${tr('新建项目')}</button>`;
     const input = $('#projSearch');
     input.addEventListener('input', () => {
       S.projectQuery = input.value.trim().toLowerCase();
@@ -513,8 +519,15 @@
   const collapsed = new Set(String(local.get('agentchat.collapsed') || '').split(',').filter(Boolean));
   const saveCollapsed = () => local.set('agentchat.collapsed', [...collapsed].join(','));
   const projectById = (id) => S.projects.find((p) => p.id === id) || null;
+  // 不属于项目的会话（左边栏「新建会话」建的）：每个占一个项目（standalone），按项目的先后排，置顶的在前
+  const looseRooms = () =>
+    S.projects
+      .filter((p) => p.standalone)
+      .flatMap((p) => p.rooms)
+      .sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0));
 
-  // 左边栏：项目（一个文件夹）下面是它的会话。点项目名展开或收起；鼠标移上去右边有「新建会话」和「更多」
+  // 左边栏：项目（一个文件夹）下面是它的会话。点项目名展开或收起；鼠标移上去右边有「新建会话」和「更多」。
+  // 不属于项目的会话列在下面的「会话」里，不显示项目这一层
   function renderProjects() {
     // 正在拖动排序时先不重画（不然拖着的那一行就没了），松手以后再画；刚按下还没拖起来的就当没按
     if (drag) {
@@ -542,6 +555,7 @@
           )}">${ICONS.more}</button></li>`;
     };
     const groups = S.projects
+      .filter((p) => !p.standalone)
       .map((p) => {
         // 搜索时：项目名或文件夹对得上就整个列出来，不然只列名字对得上的会话
         const whole = !q || has(p.name) || has(p.workspace);
@@ -561,8 +575,15 @@
         </li>`;
       })
       .join('');
-    box.innerHTML = `<div class="sec-head"><h2>${tr('项目')}</h2></div>
-      ${groups ? `<ul class="proj-list">${groups}</ul>` : `<p class="rail-empty">${q ? tr('没有名字里带这几个字的项目或会话') : tr('还没有项目')}</p>`}`;
+    const loose = looseRooms().filter((r) => has(r.name));
+    const chats = loose.length ? `<div class="sec-head"><h2>${tr('会话')}</h2></div><ul class="chat-list loose-list">${loose.map(chat).join('')}</ul>` : '';
+    // 搜索时只列有结果的那一栏
+    const projects =
+      groups || !q || !chats
+        ? `<div class="sec-head"><h2>${tr('项目')}</h2></div>
+      ${groups ? `<ul class="proj-list">${groups}</ul>` : `<p class="rail-empty">${q ? tr('没有名字里带这几个字的项目或会话') : tr('还没有项目')}</p>`}`
+        : '';
+    box.innerHTML = projects + chats;
     const back = keepSel && box.querySelector(keepSel);
     if (back) back.focus({ preventScroll: true });
   }
@@ -763,7 +784,10 @@
       <div class="welcome-mark">${brandMark()}</div>
       <h1>${tr('让几个 AI 在同一个项目里一起干活')}</h1>
       <p class="lead">${tr('你提需求，它们自己分工：一个出设计，一个写代码，一个做审查。谁做完就在群里 @ 下一位，接力往下做。你随时可以插话、叫停。')}</p>
-      <button class="btn primary large" data-new-project>${ICONS.plus}${tr('新建项目')}</button>
+      <div class="welcome-actions">
+        <button class="btn primary large" data-new-project>${ICONS.folders}${tr('新建项目')}</button>
+        <button class="btn large" data-new-standalone>${ICONS.plusCircle}${tr('新建会话')}</button>
+      </div>
       <div class="welcome-card">
         <ol class="relay-track demo">${hops}</ol>
         <p class="demo-caption">${tr('一次接力：实心点是做完的成员，闪动的正在工作，空心的在排队。')}</p>
@@ -825,12 +849,13 @@
   function updateTitlebar() {
     const tb = $('#titlebar');
     if (!tb || !tb.firstElementChild) return;
-    // 项目名 / 会话名 ▾，后面是这个会话的成员
+    // 项目名 / 会话名 ▾，后面是这个会话的成员。不属于项目的会话只有会话名
     const project = projectById(S.projectId);
-    $('#tbProject').textContent = project ? project.name : '';
-    tb.querySelector('[data-tb="project"]').hidden = !project;
-    tb.querySelector('[data-tb="project"]').title = project ? `${project.workspace}\n${tr('点击查看项目操作')}` : '';
-    $('#tbSlash').hidden = !project;
+    const crumb = project && !project.standalone ? project : null;
+    $('#tbProject').textContent = crumb ? crumb.name : '';
+    tb.querySelector('[data-tb="project"]').hidden = !crumb;
+    tb.querySelector('[data-tb="project"]').title = crumb ? `${crumb.workspace}\n${tr('点击查看项目操作')}` : '';
+    $('#tbSlash').hidden = !crumb;
     $('#tbTitle').textContent = S.room ? S.room.name : project ? tr('还没有会话') : appName();
     const title = tb.querySelector('[data-tb="title"]');
     title.title = S.room ? tr('点击切换会话') : '';
@@ -893,7 +918,8 @@
 
   function appMenu(anchor) {
     const items = [
-      { label: tr('新建项目'), icon: ICONS.plus, run: newProjectModal },
+      { label: tr('新建会话'), icon: ICONS.plusCircle, run: () => newStandaloneChat() },
+      { label: tr('新建项目'), icon: ICONS.folders, run: newProjectModal },
       { label: tr('重新检测 AI 工具'), icon: ICONS.refresh, run: () => redetect() },
     ];
     if (desktop && desktop.action) {
@@ -914,19 +940,25 @@
     openMenu(anchor, items, { align: 'left' });
   }
 
-  // 标题栏里的会话名 ▾：这个项目里的会话，点一下切过去；下面是新建、重命名、会话设置
+  // 标题栏里的会话名 ▾：这个项目里的会话（不属于项目的会话列的是「会话」下面那些），点一下切过去；
+  // 下面是新建、重命名、会话设置
   function conversationMenu(anchor) {
     const p = projectById(S.projectId);
     if (!p) return;
-    const items = p.rooms.slice(0, 15).map((r) => ({
+    const list = p.standalone ? looseRooms() : p.rooms;
+    const items = list.slice(0, 15).map((r) => ({
       label: r.name,
       hint: r.busy ? tr('工作中') : ago(r.updatedAt),
       checked: r.id === S.roomId,
       run: () => openRoom(r.id),
     }));
-    if (p.rooms.length > 15) items.push({ label: tr('……还有 {n} 个会话，在左边侧边栏里', { n: p.rooms.length - 15 }), disabled: true, run() {} });
+    if (list.length > 15) items.push({ label: tr('……还有 {n} 个会话，在左边侧边栏里', { n: list.length - 15 }), disabled: true, run() {} });
     if (items.length) items.push('-');
-    items.push({ label: tr('新建会话'), icon: ICONS.plus, run: () => newConversation(p.id, S.roomId) });
+    items.push(
+      p.standalone
+        ? { label: tr('新建会话'), icon: ICONS.plusCircle, run: () => newStandaloneChat() }
+        : { label: tr('新建会话'), icon: ICONS.plus, run: () => newConversation(p.id, S.roomId) }
+    );
     if (S.room) {
       const r = S.room;
       items.push(
@@ -942,13 +974,18 @@
   function chatMenu(anchor, id, pos) {
     const r = S.rooms.find((x) => x.id === id);
     if (!r) return;
+    // 不属于项目的会话：新建的也不属于项目（点了就建好，不弹窗）；没有项目菜单，所以在这里打开它的文件夹
+    const alone = !!(projectById(r.projectId) || {}).standalone;
     openMenu(
       anchor,
       [
         { label: r.pinned ? tr('取消置顶') : tr('置顶'), icon: ICONS.pin, run: () => pinConversation(r, !r.pinned) },
         { label: tr('重命名会话…'), icon: ICONS.edit, run: () => renameConversation(r) },
         { label: tr('会话设置…'), icon: ICONS.gear, run: () => conversationSettings(r.id) },
-        { label: tr('用相同的成员新建会话…'), icon: ICONS.plus, run: () => newConversation(r.projectId, r.id) },
+        alone
+          ? { label: tr('用相同的成员新建会话'), icon: ICONS.plusCircle, run: () => newStandaloneChat(r.id) }
+          : { label: tr('用相同的成员新建会话…'), icon: ICONS.plus, run: () => newConversation(r.projectId, r.id) },
+        ...(alone ? [{ label: tr('在文件管理器中打开'), icon: ICONS.open, run: () => api('POST', `/api/rooms/${r.id}/open`).catch((e) => toast(e.message, true)) }] : []),
         '-',
         { label: tr('删除会话'), icon: ICONS.trash, danger: true, run: () => deleteConversation(r) },
       ],
@@ -978,11 +1015,12 @@
 
   function moreMenu(anchor) {
     if (!S.room) return;
+    const alone = S.room.standalone; // 不属于项目的会话没有项目设置
     openMenu(anchor, [
       { label: tr('会话设置…'), icon: ICONS.gear, run: settingsModal },
-      { label: tr('项目设置…'), icon: ICONS.folder, run: () => projectSettingsModal(S.room.projectId) },
+      ...(alone ? [] : [{ label: tr('项目设置…'), icon: ICONS.folder, run: () => projectSettingsModal(S.room.projectId) }]),
       { label: tr('在文件管理器中打开'), icon: ICONS.open, run: () => api('POST', `/api/rooms/${S.roomId}/open`).catch((e) => toast(e.message, true)) },
-      { label: tr('复制项目文件夹路径'), icon: ICONS.copy, run: () => copyText(S.room.workspace, tr('已复制路径')) },
+      { label: alone ? tr('复制文件夹路径') : tr('复制项目文件夹路径'), icon: ICONS.copy, run: () => copyText(S.room.workspace, tr('已复制路径')) },
       '-',
       ...PANEL_TABS.map(([id, label, icon]) => ({ label: tr('打开{panel}', { panel: label }), icon: ICONS[icon], run: () => panel.show(id) })),
     ]);
@@ -1350,7 +1388,9 @@
       const ws = String(proj.workspace || '').replace(/\\/g, '/').replace(/\/+$/, '');
       if (ws && low.startsWith(ws.toLowerCase() + '/') && (!best || ws.length > best.ws.length)) best = { proj, ws };
     }
-    if (best && best.proj.rooms.length) return { rel: rel.slice(best.ws.length + 1), roomId: best.proj.rooms[0].id, project: best.proj.name, full: rel };
+    // standalone：在不属于项目的会话的文件夹里（project 是那个会话的名字）
+    if (best && best.proj.rooms.length)
+      return { rel: rel.slice(best.ws.length + 1), roomId: best.proj.rooms[0].id, project: best.proj.name, standalone: !!best.proj.standalone, full: rel };
     return { rel, outside: true, project: best ? best.proj.name : '', full: rel };
   }
 
@@ -2607,6 +2647,33 @@
     renderProjects();
   }
 
+  // 新建会话（左边栏最上面那个，不属于哪个项目）：不用选文件夹，点一下就建好打开，文件夹由 Nightshift 自己建。
+  // 成员照搬 from 那个会话（默认是正在看的），它没有成员时按「设计 + 开发」配，之后在标题栏的成员面板里改。
+  // 正在看的就是这样一个还没发过消息的会话时，不再多建一个空的
+  let creatingChat = false;
+  async function newStandaloneChat(from = S.roomId) {
+    if (creatingChat) return;
+    if (S.room && S.room.standalone && from === S.roomId && !S.messages.length) {
+      const input = $('#input');
+      if (input) input.focus();
+      return;
+    }
+    creatingChat = true;
+    try {
+      const room = await api('POST', '/api/chats', { from: from || '' });
+      await refreshRooms();
+      await openRoom(room.id);
+      const row = $(`#projects [data-room="${room.id}"]`);
+      if (row) row.scrollIntoView({ block: 'nearest' });
+      const input = $('#input');
+      if (input) input.focus();
+    } catch (e) {
+      toast(e.message, true);
+    } finally {
+      creatingChat = false;
+    }
+  }
+
   // 在项目里新建会话：先在弹窗里起名字（不填就等发第一条消息时自动起），再选成员从哪来。
   // 默认照搬 from 那个会话的成员（没有就用项目里最近的会话），也可以用团队模板，或者先空着
   function newConversation(pid, from) {
@@ -2705,8 +2772,15 @@
     panel.onRoom();
   }
 
+  // 不属于项目的会话：Nightshift 给它建的文件夹一起删（桌面版放进回收站）
   async function deleteConversation(r) {
-    const ok = await confirmBox(tr('删除会话'), tr('确定删除会话「{name}」？聊天记录会一起删掉，项目文件夹里的文件不会动。', { name: r.name }), tr('删除会话'), true);
+    const alone = !!(projectById(r.projectId) || {}).standalone;
+    const text = !alone
+      ? tr('确定删除会话「{name}」？聊天记录会一起删掉，项目文件夹里的文件不会动。', { name: r.name })
+      : desktop
+        ? tr('确定删除会话「{name}」？聊天记录会删掉，这个会话的文件夹会放进回收站。', { name: r.name })
+        : tr('确定删除会话「{name}」？聊天记录和这个会话文件夹里的文件都会删掉。', { name: r.name });
+    const ok = await confirmBox(tr('删除会话'), text, tr('删除会话'), true);
     if (!ok) return false;
     await api('DELETE', `/api/rooms/${r.id}`);
     // 删的是正在看的会话才要换到别的会话；删左边栏里别的会话，只刷新列表
@@ -3425,8 +3499,12 @@
       </div>
       <div class="field"><label class="check"><input type="checkbox" id="ps-accept" ${r.settings.acceptance ? 'checked' : ''}>${tr('交付验收清单')}</label>
         <span class="hint">${tr('成员说做完了、把成果交给你验收时，Nightshift 按清单核对源代码、测试、EXE、启动测试、日志和原有文件，结果做成一张卡片，不只听成员怎么说。只是交接给队友、向你提问时不核对。')}</span></div>
-      <div class="field"><span class="label">${tr('项目文件夹')}</span><code class="hint" style="font-family:var(--mono);overflow-wrap:anywhere">${esc(r.workspace)}</code>
-        <span class="hint">${tr('项目里的会话都在这个文件夹里工作，要换的话去项目设置。')} <button type="button" class="link-btn" data-project-settings>${tr('项目设置…')}</button></span></div>
+      <div class="field"><span class="label">${r.standalone ? tr('文件夹') : tr('项目文件夹')}</span><code class="hint" style="font-family:var(--mono);overflow-wrap:anywhere">${esc(r.workspace)}</code>
+        <span class="hint">${
+          r.standalone
+            ? tr('这个会话不属于哪个项目，Nightshift 给它单独建了这个文件夹，成员读写的文件都在这里。')
+            : `${tr('项目里的会话都在这个文件夹里工作，要换的话去项目设置。')} <button type="button" class="link-btn" data-project-settings>${tr('项目设置…')}</button>`
+        }</span></div>
       ${
         r.logPath
           ? `<div class="field"><span class="label">${tr('聊天记录文件')}</span><code class="hint" style="font-family:var(--mono);overflow-wrap:anywhere">${esc(r.logPath)}</code>
@@ -3436,13 +3514,21 @@
       <div class="danger-zone"><div class="row">
         <button type="button" class="btn" data-clear>${tr('清空聊天记录')}</button>
         <button type="button" class="btn danger" data-delete>${tr('删除会话')}</button></div>
-        <p class="hint" style="margin:8px 0 0">${tr('删除会话会删掉它的聊天记录和成员设置，不会动项目文件夹里的文件。')}</p></div>
+        <p class="hint" style="margin:8px 0 0">${
+          !r.standalone
+            ? tr('删除会话会删掉它的聊天记录和成员设置，不会动项目文件夹里的文件。')
+            : desktop
+              ? tr('删除会话会删掉它的聊天记录和成员设置，这个会话的文件夹会放进回收站。')
+              : tr('删除会话会删掉它的聊天记录和成员设置，这个会话文件夹里的文件也会删掉。')
+        }</p></div>
     </form>`);
     const m = openModal({ title: tr('会话设置'), body, wide: true });
-    $('[data-project-settings]', body).addEventListener('click', () => {
-      m.close();
-      projectSettingsModal(r.projectId);
-    });
+    const toProject = $('[data-project-settings]', body);
+    if (toProject)
+      toProject.addEventListener('click', () => {
+        m.close();
+        projectSettingsModal(r.projectId);
+      });
     $('[data-clear]', body).addEventListener('click', async () => {
       const ok = await confirmBox(tr('清空聊天记录'), tr('所有消息都会删除，各成员也会忘掉之前的对话。项目文件不受影响。'), tr('清空'), true);
       if (!ok) return;
@@ -3528,6 +3614,12 @@
     if (list.classList.contains('proj-list')) {
       S.projects.sort(by);
       return api('POST', '/api/projects/order', { ids }).catch(fail);
+    }
+    // 不属于项目的会话：排的是它们各自占的那个项目（没列出来的项目接在后面，先后不变）
+    if (list.classList.contains('loose-list')) {
+      const pids = ids.map((id) => (S.rooms.find((r) => r.id === id) || {}).projectId).filter(Boolean);
+      S.projects.sort((a, b) => pids.indexOf(a.id) - pids.indexOf(b.id));
+      return api('POST', '/api/projects/order', { ids: pids }).catch(fail);
     }
     const pid = list.closest('.proj').dataset.id;
     const p = projectById(pid);
@@ -3674,7 +3766,7 @@
   // ---------- 点击 ----------
   document.addEventListener('click', async (e) => {
     const t = e.target.closest(
-      '[data-room],[data-new-project],[data-add-member],[data-agent],[data-at],[data-refresh-env],[data-settings],[data-open-folder],[data-stop],[data-continue],[data-work],[data-poke],[data-example],[data-tb],[data-tb-panel],[data-pick],[data-file-open],[data-file-menu],[data-file-link],[data-files-more],[data-copy-msg],[data-copy-code],[data-acct],[data-acct-tools],[data-update],[data-to-pick],[data-proj-toggle],[data-new-chat],[data-proj-menu],[data-chat-menu],[data-members],[data-accept-vote],[data-accept-clean],#jump'
+      '[data-room],[data-new-project],[data-new-standalone],[data-add-member],[data-agent],[data-at],[data-refresh-env],[data-settings],[data-open-folder],[data-stop],[data-continue],[data-work],[data-poke],[data-example],[data-tb],[data-tb-panel],[data-pick],[data-file-open],[data-file-menu],[data-file-link],[data-files-more],[data-copy-msg],[data-copy-code],[data-acct],[data-acct-tools],[data-update],[data-to-pick],[data-proj-toggle],[data-new-chat],[data-proj-menu],[data-chat-menu],[data-members],[data-accept-vote],[data-accept-clean],#jump'
     );
     // 成员面板开着时，点到面板外面就收起
     if ($('#membersPop') && !e.target.closest('#membersPop') && !e.target.closest('[data-members]')) closeMembersPop();
@@ -3686,6 +3778,7 @@
     try {
       if (d.room) return openRoom(d.room);
       if ('newProject' in d) return newProjectModal();
+      if ('newStandalone' in d) return newStandaloneChat();
       if (d.projToggle) return toggleProject(d.projToggle);
       if (d.newChat) return newConversation(d.newChat, S.room && S.room.projectId === d.newChat ? S.roomId : null);
       if (d.projMenu) {

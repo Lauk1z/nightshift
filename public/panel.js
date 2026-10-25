@@ -348,7 +348,8 @@ window.createPanel = function createPanel(ctx) {
       }
       const recent = [...ch.entries()].sort((a, b) => b[1].ts - a[1].ts).slice(0, 6);
       const ws = S.room.workspace;
-      const name = ws.split(/[\\/]/).filter(Boolean).pop() || ws;
+      // 不属于项目的会话：文件夹名是 Nightshift 起的编号，写成「会话文件夹」
+      const name = S.room.standalone ? tr('会话文件夹') : ws.split(/[\\/]/).filter(Boolean).pop() || ws;
       const keep = list.scrollTop;
       list.innerHTML =
         (recent.length
@@ -458,11 +459,11 @@ window.createPanel = function createPanel(ctx) {
       const info = loc ? null : changes().get(rel);
       const dir = parentOf(rel);
       const modes = !(loc && loc.outside) && (t.preview === 'html' || t.preview === 'md');
-      // 文件名下面一行：在哪个文件夹（别的项目里的标出项目名，项目外的写完整路径）
+      // 文件名下面一行：在哪个文件夹（别的项目里的标出项目名，不属于项目的会话标出会话名，项目外的写完整路径）
       const where = loc
         ? loc.outside
           ? esc(fullPath(dir))
-          : `<span class="fpv-proj">${esc(tr('项目「{name}」', { name: loc.project }))}</span> · ${esc(dir || tr('项目根目录'))}`
+          : `<span class="fpv-proj">${esc(loc.standalone ? tr('会话「{name}」', { name: loc.project }) : tr('项目「{name}」', { name: loc.project }))}</span> · ${esc(dir || tr('项目根目录'))}`
         : `${esc(dir || tr('项目根目录'))}${info ? ` · <span class="tree-by" style="--c:${info.color}">${esc(changedAt(info))}</span>` : ''}`;
       box.innerHTML = `
         <div class="pv-head fpv-head">

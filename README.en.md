@@ -110,17 +110,18 @@ Every message is also written to `.agentchat/chat-<chat id>.md` in the project f
 
 ## Projects and chats
 
-A project is a folder, and a chat is a group chat that works in that folder. To split work on one project into separate threads (a feature, a bug, the docs), open several chats in it and give each one different members.
+A project is a folder, and a chat is a group chat that works in that folder. To split work on one project into separate threads (a feature, a bug, the docs), open several chats in it and give each one different members. If you just want to ask something without setting up a folder first, you can also start a chat that isn't part of any project.
 
+- **New chat (no folder needed)**: click "New chat" at the top of the sidebar and the chat is created and opened right away. It copies the members of the chat you're looking at (or gets "Design + development" if that chat has no members); change them later in the members panel in the title bar. Nightshift makes a folder just for it in the `chats` folder inside the data folder, where members read and write their files; you can see them under Files in the side panel. These chats are listed under "Chats" in the sidebar, and the title bar shows only the chat's name. If the chat you're looking at is one of these and has no messages yet, clicking "New chat" again doesn't make another empty one.
 - **New project**: pick a folder, then the members of its first chat: "Design + development", "Design + development + review", or "Blank" to add them yourself later.
-- **New chat**: hover over a project in the sidebar and click +, or use "New chat" in the chat name ▾ menu in the title bar, then name the chat and pick its members in the dialog. By default it copies the members of the chat you're in, with the same models, thinking effort and permissions; you can also pick a team such as "Design + development", or "Blank". You can change them afterwards without affecting the original chat.
+- **New chat in a project**: hover over a project in the sidebar and click +, or use "New chat" in the chat name ▾ menu in the title bar, then name the chat and pick its members in the dialog. By default it copies the members of the chat you're in, with the same models, thinking effort and permissions; you can also pick a team such as "Design + development", or "Blank". You can change them afterwards without affecting the original chat.
 - **Chat names**: if you leave the name blank, the chat starts out as "New chat" and is named after your first message. To rename it, use "Rename chat…" in the chat name ▾ menu.
 - **What's shared**: chats in the same project share the project folder and the terminals. History, members, side chat, the default recipient, the auto-relay limit and the delivery checklist belong to each chat.
 - **Changing the folder**: do it in project settings. Every chat in the project moves with it, and members start fresh by rereading the chat history. Open terminals are still in the old folder, so they're closed too; new terminals open in the new folder.
-- **Chat actions**: right-click a chat in the sidebar, or hover over it and click ⋯ on the right: pin or unpin, rename, chat settings, new chat with the same members, delete. Right-clicking a project shows the project's actions.
-- **Pinning**: pinned chats stay at the top of their project, with a pin on the left.
-- **Sorting**: drag a project or chat to where you want it and let go; press Esc while dragging to cancel. Chats are sorted within their own project, and pinned and unpinned chats are sorted separately. From the keyboard, press Alt+↑ / Alt+↓ on a focused project or chat to move it one place. New projects and chats go at the top.
-- **Deleting**: deleting a chat removes its history and member settings; deleting a project removes all of its chats. Neither touches the files in the project folder.
+- **Chat actions**: right-click a chat in the sidebar, or hover over it and click ⋯ on the right: pin or unpin, rename, chat settings, new chat with the same members, delete. Chats under "Chats" also have "Open in File Explorer". Right-clicking a project shows the project's actions.
+- **Pinning**: pinned chats stay at the top of their project (or of "Chats"), with a pin on the left.
+- **Sorting**: drag a project or chat to where you want it and let go; press Esc while dragging to cancel. Chats are sorted within their own project (chats under "Chats" within "Chats"), and pinned and unpinned chats are sorted separately. From the keyboard, press Alt+↑ / Alt+↓ on a focused project or chat to move it one place. New projects and chats go at the top.
+- **Deleting**: deleting a chat removes its history and member settings; deleting a project removes all of its chats. Neither touches the files in the project folder. The exception is a chat that isn't part of a project: Nightshift made its folder, so deleting the chat deletes the folder too (it goes to the Recycle Bin).
 
 When you upgrade from 0.7 or earlier, each old project becomes a project with one chat, keeping its history and members. Old projects that used the same folder are merged into one project named after the folder, and their old names carry over to its chats.
 
@@ -128,7 +129,7 @@ When you upgrade from 0.7 or earlier, each old project becomes a project with on
 
 The interface follows the Claude desktop app: a near-black background (warm white in light mode), a darker sidebar next to a lighter chat area, content in rounded cards with thin borders, and the conversation in a centered column. It follows the system's light or dark setting unless you choose one in Settings.
 
-- **Sidebar**: search for projects and chats at the top, then "New project" and your projects. Click a project's name to expand or collapse its chats; each chat shows the time of its last message, or a blinking dot while a member is working, and pinned chats have a pin on the left. Hover over a project for + (new chat) and ⋯ (project settings, open in File Explorer, copy folder path, delete project); hover over a chat and its time turns into ⋯ (the chat's actions). Right-click shows the same menus. Projects and chats can be dragged into any order (see the previous section). At the bottom are your avatar and name (click for the account menu, see the next section), and the plug icon for tool status.
+- **Sidebar**: search for projects and chats at the top, then "New chat" (no folder needed) and "New project", then your projects, with chats that aren't part of a project listed last under "Chats". Click a project's name to expand or collapse its chats; each chat shows the time of its last message, or a blinking dot while a member is working, and pinned chats have a pin on the left. Hover over a project for + (new chat) and ⋯ (project settings, open in File Explorer, copy folder path, delete project); hover over a chat and its time turns into ⋯ (the chat's actions). Right-click shows the same menus. Projects and chats can be dragged into any order (see the previous section). At the bottom are your avatar and name (click for the account menu, see the next section), and the plug icon for tool status.
 - **Members**: in the title bar, next to the chat name, are the chat's member avatars and how many there are; a working member's avatar has a pulsing ring. Click them for the members panel, one row per member: how it's connected (Claude Code, Codex…), its model, thinking effort and permissions, and whether it's working or queued. A member without its own model choice shows the tool's default model. Click a member to open its settings, or "Add member" to add another AI.
 - **Chat**: your messages are bubbles on the right; each member's reply has its avatar, name and role above it. Hover over a message for a "Copy" button; code blocks have their own "Copy" too.
 - **Conversation timeline**: a column of marks at the left edge of the chat (like in Codex), one per message you sent. The turn you're reading is the longest and brightest mark, and turns where a member hit an error are red. Move the mouse over the marks and the ones nearby grow like a magnifier, leaving a short trail that shrinks back as you move; a card next to them shows what you said, the last reply and which members took part, and slides along as you move. Click a mark to jump to that message. It appears once there are at least two turns, and hides when the chat area is too narrow.
@@ -139,11 +140,11 @@ The window has no system title bar; the title bar blends into the interface (min
 
 | Item | What it does |
 | --- | --- |
-| ☰ | Menu: new project, re-detect AI tools, zoom, reload, developer tools, check for updates (installed version), about |
+| ☰ | Menu: new chat, new project, re-detect AI tools, zoom, reload, developer tools, check for updates (installed version), about |
 | Sidebar icon | Collapse or expand the project list (Ctrl+B) |
 | ← → | Go back and forward between chats you've opened (Alt+← / Alt+→, or the mouse side buttons) |
-| Project name | Project actions: new chat, project settings, open in File Explorer, copy folder path, delete project |
-| Chat name ▾ | Switch to another chat in the same project, or start, rename or configure a chat |
+| Project name | Project actions: new chat, project settings, open in File Explorer, copy folder path, delete project (not shown for chats outside a project) |
+| Chat name ▾ | Switch to another chat in the same project (for chats outside a project, the ones under "Chats"), or start, rename or configure a chat |
 | Member avatars | Open the chat's members panel (see above) |
 | Files, Side chat, Terminal, Browser | Open that page of the side panel; click again to close it |
 | Panel icon | Show or hide the side panel (Ctrl+J) |
@@ -160,7 +161,7 @@ Click your avatar and name at the bottom left to open the account menu (just lik
 | Language | 简体中文, 繁體中文 or English, applied immediately |
 | User guide | This document |
 | Re-detect AI tools | Look for Claude Code, Codex and OpenCode on this computer again |
-| Open data folder | Projects, chat history, settings and usage records all live here (desktop app) |
+| Open data folder | Projects, chat history, settings and usage records all live here (desktop app); folders of chats outside a project are in its `chats` folder |
 | Check for updates… | Installed version only: checks for a new version right away; the result shows in "About". Once a new version has downloaded, this becomes "Restart to update" (see "Automatic updates") |
 | About | Version, update status and where the data folder is |
 

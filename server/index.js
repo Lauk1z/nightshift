@@ -7,7 +7,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
-const { Store, newId, autoTitle } = require('./store');
+const { Store, newId, autoTitle, pathKey } = require('./store');
 const { Orchestrator } = require('./orchestrator');
 const { SideChat } = require('./side');
 const { Terminals } = require('./terminal');
@@ -90,7 +90,8 @@ function publicRoom(room) {
   return {
     id: room.id,
     projectId: room.projectId,
-    projectName: project ? project.name : '',
+    projectName: project && !project.standalone ? project.name : '',
+    standalone: !!(project && project.standalone), // 不属于项目的会话（左边栏「新建会话」建的）
     name: room.name,
     autoName: !!room.autoName,
     pinned: !!room.pinned,
@@ -121,10 +122,12 @@ function roomSummary(room) {
   };
 }
 
-// 项目：名字、文件夹和里面的会话（最近动过的排前面）
+// 项目：名字、文件夹和里面的会话（最近动过的排前面）。
+// 不属于项目的会话也是一个项目（standalone），界面上不显示项目这一层，名字就用会话的
 function projectSummary(p) {
   const rooms = store.roomsOf(p.id).map(roomSummary);
-  return { id: p.id, name: p.name, workspace: p.workspace, createdAt: p.createdAt, busy: rooms.some((r) => r.busy), rooms };
+  const name = p.standalone && rooms[0] ? rooms[0].name : p.name;
+  return { id: p.id, name, workspace: p.workspace, standalone: !!p.standalone, createdAt: p.createdAt, busy: rooms.some((r) => r.busy), rooms };
 }
 
 function broadcastRooms() {
@@ -468,9 +471,54 @@ route('DELETE', '/api/projects/:id', async (req, { params }) => {
   }
   terms.killRoom(project.id);
   store.deleteProject(project.id);
+  if (project.standalone) removeChatFolder(project.workspace);
   broadcastRooms();
   return { ok: true };
 });
+
+// ---------- 不属于项目的会话：左边栏的「新建会话」，不用选文件夹 ----------
+// 文件夹由 Nightshift 建在数据文件夹的 chats 里。成员照搬 from 那个会话（一般是正在看的会话），
+// 那个会话没有成员时按「设计 + 开发」配；也可以指定团队模板
+async function createChat(body) {
+  const from = body.from && store.getRoom(body.from);
+  let agents;
+  let settings = {};
+  if (body.template) agents = templateAgents(body.template, body.template === 'blank' ? {} : await adapters.detectAll());
+  else if (from && from.agents.length) ({ agents, settings } = copyAgents(from));
+  else agents = templateAgents('duo', await adapters.detectAll());
+  const workspace = path.join(DATA, 'chats', newId('c'));
+  fs.mkdirSync(workspace, { recursive: true });
+  const project = store.createProject({ name: tr('新会话'), workspace, standalone: true });
+  const room = store.createRoom({ projectId: project.id, name: tr('新会话'), autoName: true, agents, settings });
+  broadcastRooms();
+  return room;
+}
+
+route('POST', '/api/chats', async (req, { body }) => publicRoom(await createChat(body || {})));
+
+// 删掉不属于项目的会话时，Nightshift 给它建的文件夹一起删：桌面版放进回收站，删错了还能找回来；
+// 放不进去（比如文件还被占用着）就先留着。命令行运行时没有回收站可用，直接删。
+// 只删 chats 里面的文件夹，万一这个会话的文件夹被换成了别处的，不动
+async function removeChatFolder(dir) {
+  dir = path.resolve(String(dir || ''));
+  if (pathKey(path.dirname(dir)) !== pathKey(path.join(DATA, 'chats')) || !fs.existsSync(dir)) return;
+  if (!process.versions.electron) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    } catch (e) {
+      console.warn(`[chats] 没能删掉 ${dir}：${e.message}`);
+    }
+    return;
+  }
+  for (let i = 0; i < 5; i++) {
+    try {
+      return await require('electron').shell.trashItem(dir);
+    } catch (e) {
+      if (i === 4) console.warn(`[chats] 没能把 ${dir} 放进回收站：${e.message}`);
+      else await new Promise((r) => setTimeout(r, 400)); // 刚停下的成员可能还占着里面的文件
+    }
+  }
+}
 
 // 成员配置照搬一份（新的 id，不带会话记忆），默认接收人跟着对上
 function copyAgents(from) {
@@ -574,12 +622,18 @@ route('PATCH', '/api/rooms/:id', async (req, { params, body }) => {
   return publicRoom(room);
 });
 
-// 删掉一个会话（终端属于项目，留着）
+// 删掉一个会话（终端属于项目，留着）。不属于项目的会话连同它占的项目、终端和文件夹一起删
 route('DELETE', '/api/rooms/:id', async (req, { params }) => {
-  needRoom(params.id);
+  const room = needRoom(params.id);
   orch.stop(params.id);
   side.stop(params.id);
   store.deleteRoom(params.id);
+  const project = store.getProject(room.projectId);
+  if (project && project.standalone && !store.roomsOf(project.id).length) {
+    terms.killRoom(project.id);
+    store.deleteProject(project.id);
+    removeChatFolder(project.workspace);
+  }
   broadcastRooms();
   return { ok: true };
 });

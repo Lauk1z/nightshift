@@ -595,6 +595,10 @@ svg.thick {
   font-size: 12.5px;
   color: var(--faint);
 }
+/* 项目下面的「会话」：不属于哪个项目的会话 */
+.proj-list + .sec-head {
+  margin-top: 10px;
+}
 .icon-btn {
   display: inline-grid;
   place-items: center;
@@ -2510,7 +2514,14 @@ body.sorting * {
   background: var(--raised);
   text-align: left;
 }
-.welcome-inner > .btn.large + .welcome-card {
+/* 「新建项目」和「新建会话」并排，窄的时候换行 */
+.welcome-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+}
+.welcome-actions + .welcome-card {
   margin-top: 32px;
 }
 .welcome-card h2 {

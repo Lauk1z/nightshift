@@ -843,5 +843,17 @@
   "自己输入的": "Typed in",
   "{name} 下一轮开始用 {model}": "{name} will use {model} from the next turn",
   "（新模型不支持原来的思考强度，改回了默认）": " (the new model doesn't support the previous thinking effort, so it's back to default)",
-  "本机能用的 AI 工具：{n} 个，另有 {old} 个版本太旧。点开看版本、重新检测": "{n} AI {n|tool|tools} available on this computer, plus {old} with an outdated version. Click to see versions or re-detect"
+  "本机能用的 AI 工具：{n} 个，另有 {old} 个版本太旧。点开看版本、重新检测": "{n} AI {n|tool|tools} available on this computer, plus {old} with an outdated version. Click to see versions or re-detect",
+  "不用选文件夹，直接开始一个会话": "Start a chat without picking a folder",
+  "会话": "Chats",
+  "用相同的成员新建会话": "New chat with the same members",
+  "复制文件夹路径": "Copy folder path",
+  "确定删除会话「{name}」？聊天记录会删掉，这个会话的文件夹会放进回收站。": "Delete the chat “{name}”? Its history is deleted, and its folder goes to the Recycle Bin.",
+  "确定删除会话「{name}」？聊天记录和这个会话文件夹里的文件都会删掉。": "Delete the chat “{name}”? Its history and the files in its folder are deleted.",
+  "文件夹": "Folder",
+  "这个会话不属于哪个项目，Nightshift 给它单独建了这个文件夹，成员读写的文件都在这里。": "This chat isn't part of a project. Nightshift made this folder just for it, and members read and write their files here.",
+  "删除会话会删掉它的聊天记录和成员设置，这个会话的文件夹会放进回收站。": "Deleting a chat removes its history and member settings, and moves its folder to the Recycle Bin.",
+  "删除会话会删掉它的聊天记录和成员设置，这个会话文件夹里的文件也会删掉。": "Deleting a chat removes its history and member settings, along with the files in its folder.",
+  "会话「{name}」": "Chat \"{name}\"",
+  "会话文件夹": "Chat folder"
 }

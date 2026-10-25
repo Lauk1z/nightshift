@@ -3,6 +3,8 @@
 //   data/projects/<项目 id>/project.json  项目：名字和文件夹。一个项目里可以有好几个会话，共用这个文件夹
 //   data/rooms/<会话 id>/room.json        会话：成员配置、各成员的会话记忆；messages.jsonl 存聊天记录；
 //                                         baseline.json 是打开了交付验收清单时，任务开始时的文件快照
+//   data/chats/<文件夹>/                  不属于哪个项目的会话（左边栏「新建会话」）的文件夹，Nightshift 自己建的。
+//                                         这种会话也存成一个项目（standalone: true），里面只有它一个会话，界面上不显示项目这一层
 // 另外在项目文件夹里给每个会话写一份 .agentchat/chat-<会话 id>.md，方便 AI 回顾更早的讨论，也方便人看。
 // （代码里的 room 就是会话，早期版本一个项目只有一个会话，所以叫 room。）
 const fs = require('fs');
@@ -133,10 +135,16 @@ class Store {
     this.number(arrange(this.roomsOf(projectId), ids), (r) => this.saveRoom(r));
   }
 
-  // 放到项目里会话列表的最上面（新建、置顶、取消置顶时）。置顶的总在前面，所以取消置顶后排在没置顶的第一个
+  // 放到项目里会话列表的最上面（新建、置顶、取消置顶时）。置顶的总在前面，所以取消置顶后排在没置顶的第一个。
+  // 不属于项目的会话一个占一个项目，左边栏里排的是项目的先后，所以把项目挪到最上面
   toTop(room) {
     const others = this.roomsOf(room.projectId).filter((r) => r.id !== room.id);
     room.order = others.length ? Math.min(...others.map((r) => r.order ?? 0)) - 1 : 0;
+    const p = this.getProject(room.projectId);
+    if (p && p.standalone) {
+      p.order = Math.min(...[...this.projects.values()].map((x) => x.order ?? 0)) - 1;
+      this.saveProject(p);
+    }
   }
 
   // 旧版本里一个项目就是一个会话：按文件夹把它们放进项目里，同一个文件夹的放进同一个项目。
@@ -201,9 +209,10 @@ class Store {
     return [...this.rooms.values()].filter((r) => r.projectId === projectId).sort(byPinThenOrder);
   }
 
-  createProject({ name, workspace, createdAt }, { top = true } = {}) {
+  createProject({ name, workspace, createdAt, standalone }, { top = true } = {}) {
     const now = Date.now();
     const p = { id: newId('p'), name: String(name || '') || path.basename(String(workspace || '')), workspace, createdAt: createdAt || now, updatedAt: now };
+    if (standalone) p.standalone = true;
     if (top) p.order = this.projects.size ? Math.min(...[...this.projects.values()].map((x) => x.order ?? 0)) - 1 : 0;
     this.projects.set(p.id, p);
     this.saveProject(p);

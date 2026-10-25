@@ -1623,6 +1623,40 @@ test('设置和用量接口；换了语言，服务端的报错和 boot.js 跟�
     await call('POST', '/api/projects/order', { ids: [made.project.id, other.id] });
     assert.deepStrictEqual(await projectIds(), [made.project.id, other.id]);
     await call('DELETE', `/api/projects/${other.id}`);
+    // 不属于项目的会话（左边栏的「新建会话」）：不用选文件夹，Nightshift 在数据文件夹的 chats 里给它建一个；
+    // 成员照搬 from 那个会话。它也存成一个项目（standalone），名字跟着会话
+    const chat = (await call('POST', '/api/chats', { from: rid })).json();
+    assert.deepStrictEqual([chat.standalone, chat.projectName, chat.name, chat.autoName], [true, '', 'New chat', true]); // 这时界面是英文
+    assert.strictEqual(path.dirname(chat.workspace), path.join(dir, 'chats'));
+    assert.ok(fs.statSync(chat.workspace).isDirectory());
+    assert.deepStrictEqual(chat.agents.map((a) => [a.name, a.model]), [['DS', 'deepseek-chat']]);
+    assert.strictEqual(chat.settings.defaultAgent, chat.agents[0].id);
+    assert.deepStrictEqual((await call('POST', '/api/chats', { template: 'blank' })).json().agents, []);
+    const looseOf = async () => (await call('GET', '/api/projects')).json().filter((p) => p.standalone);
+    assert.strictEqual((await call('GET', '/api/projects')).json().find((p) => p.id === made.project.id).standalone, false);
+    await call('POST', `/api/rooms/${chat.id}/messages`, { text: '@DS 随便问问：正则怎么匹配邮箱' });
+    const cp = (await looseOf()).find((p) => p.id === chat.projectId);
+    assert.deepStrictEqual([cp.name, cp.rooms.map((r) => r.id)], ['随便问问：正则怎么匹配邮箱', [chat.id]]);
+    // 排的是它们各自占的项目：新建的在最上面；置顶、取消置顶时放到最上面；拖动以后按拖的顺序
+    const chat2 = (await call('POST', '/api/chats', { from: chat.id })).json();
+    const looseIds = async () => (await looseOf()).map((p) => p.rooms[0].id).filter((id) => id === chat.id || id === chat2.id);
+    assert.deepStrictEqual(await looseIds(), [chat2.id, chat.id]);
+    await call('PATCH', `/api/rooms/${chat.id}`, { pinned: true });
+    assert.deepStrictEqual(await looseIds(), [chat.id, chat2.id]);
+    await call('POST', '/api/projects/order', { ids: [chat2.projectId, chat.projectId] });
+    assert.deepStrictEqual(await looseIds(), [chat2.id, chat.id]);
+    assert.deepStrictEqual(await projectIds(), [made.project.id], '排不属于项目的会话不影响项目');
+    // 删会话：它占的项目和 Nightshift 建的文件夹一起删（这里不是桌面版，直接删）
+    fs.writeFileSync(path.join(chat.workspace, 'notes.md'), '# 随手记\n');
+    await call('DELETE', `/api/rooms/${chat.id}`);
+    assert.ok(!(await looseOf()).some((p) => p.id === chat.projectId));
+    assert.ok(!fs.existsSync(chat.workspace));
+    // 文件夹被换到 chats 外面的，删会话时不动那个文件夹
+    const elsewhere = tmp();
+    await call('PATCH', `/api/rooms/${chat2.id}`, { workspace: elsewhere });
+    await call('DELETE', `/api/rooms/${chat2.id}`);
+    assert.ok(fs.existsSync(elsewhere));
+    assert.ok(!(await looseOf()).some((p) => p.id === chat2.projectId));
     // 终端属于项目：从哪个会话打开都是同一组
     const termList = (await call('GET', `/api/term?room=${second.id}`)).json();
     assert.deepStrictEqual(termList.terminals, []);
