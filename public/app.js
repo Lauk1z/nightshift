@@ -363,7 +363,11 @@
     for (const c of String(s)) h = (h * 31 + c.codePointAt(0)) >>> 0;
     return PALETTE[h % PALETTE.length];
   }
-  const agents = () => (S.room ? S.room.agents : []);
+  // 主界面上是一个还没建的新会话（S.home，见 goHome）：成员、默认接收人用它的
+  const agents = () => (S.room ? S.room.agents : S.home ? S.home.agents : []);
+  const defaultAgentId = () => (S.room ? S.room.settings.defaultAgent : S.home ? S.home.defaultAgent : '');
+  // 输入框的草稿、附件按会话记；主界面的记在 'home' 下
+  const draftKey = () => S.roomId || 'home';
   const enabledAgents = () => agents().filter((a) => a.enabled !== false);
   const agentById = (id) => agents().find((a) => a.id === id);
   const envOf = (id) => (S.env && S.env.adapters && S.env.adapters[id]) || {};
@@ -692,23 +696,50 @@
   }
 
   // ---------- 主区 ----------
+  // 输入框：会话里和主界面上是同一个（主界面上的会话还没建，见 goHome）
+  const composerHtml = (placeholder) => `<form class="composer" id="composer" autocomplete="off">
+      <div class="mention-pop" id="mentionPop" role="listbox" hidden></div>
+      <div class="attach-list" id="attachList" hidden></div>
+      <div id="input" class="editor" contenteditable="true" role="textbox" aria-multiline="true" aria-label="${tr('消息')}" spellcheck="false"
+        data-placeholder="${placeholder}"></div>
+      <div class="composer-row">
+        <div class="composer-tools">
+          <button type="button" class="tool-btn" data-attach aria-haspopup="menu" title="${tr('添加文件或文件夹（也可以直接拖进来）')}" aria-label="${tr('添加文件或文件夹')}">${ICONS.plus}</button>
+          <button type="button" class="tool-btn" data-insert="@" title="${tr('指定成员（输入 @）')}" aria-label="${tr('指定成员')}">@</button>
+          <button type="button" class="tool-btn" data-insert="/" title="${tr('选择技能（输入 /）')}" aria-label="${tr('选择技能')}">/</button>
+        </div>
+        <div class="to" id="to"></div>
+        <button type="button" class="send-btn" id="sendBtn"></button>
+      </div>
+    </form>`;
+  const dropZoneHtml = () => `<div class="drop-zone" id="dropZone" hidden><div class="drop-card">${ICONS.plus}<b>${tr('松开鼠标，添加到消息里')}</b>
+      <span>${tr('项目外的文件会复制一份到项目文件夹里，所有成员都能读到')}</span></div></div>`;
+
   function renderMain() {
     const main = $('#main');
     if (!S.room) {
-      main.innerHTML = '';
       const p = projectById(S.projectId);
       // 项目里的会话都删完了：停在这个项目，给一个「新建会话」
-      main.append(
-        p
-          ? el(`<div class="welcome"><div class="welcome-inner project-empty">
+      if (p) {
+        main.innerHTML = '';
+        main.append(
+          el(`<div class="welcome"><div class="welcome-inner project-empty">
               <div class="welcome-mark">${brandMark()}</div>
               <h1>${esc(p.name)}</h1>
               <p class="lead">${esc(tr('这个项目还没有会话。新建一个会话，给它配上成员，就可以开始了。'))}</p>
               <p class="hint mono">${esc(p.workspace)}</p>
               <button class="btn primary large" data-new-chat="${p.id}">${ICONS.plus}${tr('新建会话')}</button>
             </div></div>`)
-          : welcomeNode()
-      );
+        );
+      } else {
+        // 主界面：图标、按时间打招呼，下面就是输入框（像 Claude 的新对话）
+        main.innerHTML = `<div class="home"><div class="home-inner">
+            <div class="home-mark">${brandMark()}</div>
+            <h1 class="home-greet" id="homeGreet">${esc(greeting())}</h1>
+            ${composerHtml(tr('想好了就开始吧。'))}
+          </div></div>${dropZoneHtml()}`;
+        setupComposer();
+      }
       renderHeader();
       return;
     }
@@ -727,25 +758,10 @@
           <button type="button" class="jump" id="jump" hidden title="${tr('有新消息，回到底部')}" aria-label="${tr('回到底部')}">${ICONS.arrowDown}</button>
           <div class="relay" id="relay" aria-live="polite" hidden></div>
           <div class="banner" id="banner" hidden></div>
-          <form class="composer" id="composer" autocomplete="off">
-            <div class="mention-pop" id="mentionPop" role="listbox" hidden></div>
-            <div class="attach-list" id="attachList" hidden></div>
-            <div id="input" class="editor" contenteditable="true" role="textbox" aria-multiline="true" aria-label="${tr('消息')}" spellcheck="false"
-              data-placeholder="${tr('给团队发消息，用 @ 指定成员，/ 选择技能')}"></div>
-            <div class="composer-row">
-              <div class="composer-tools">
-                <button type="button" class="tool-btn" data-attach aria-haspopup="menu" title="${tr('添加文件或文件夹（也可以直接拖进来）')}" aria-label="${tr('添加文件或文件夹')}">${ICONS.plus}</button>
-                <button type="button" class="tool-btn" data-insert="@" title="${tr('指定成员（输入 @）')}" aria-label="${tr('指定成员')}">@</button>
-                <button type="button" class="tool-btn" data-insert="/" title="${tr('选择技能（输入 /）')}" aria-label="${tr('选择技能')}">/</button>
-              </div>
-              <div class="to" id="to"></div>
-              <button type="button" class="send-btn" id="sendBtn"></button>
-            </div>
-          </form>
+          ${composerHtml(tr('给团队发消息，用 @ 指定成员，/ 选择技能'))}
         </div>
       </div>
-      <div class="drop-zone" id="dropZone" hidden><div class="drop-card">${ICONS.plus}<b>${tr('松开鼠标，添加到消息里')}</b>
-        <span>${tr('项目外的文件会复制一份到项目文件夹里，所有成员都能读到')}</span></div></div>`;
+      ${dropZoneHtml()}`;
     S.liveKey = null;
     renderHeader();
     renderTranscript();
@@ -761,53 +777,65 @@
     scrollToBottom();
   }
 
-  // 还没有项目时的首页：居中的大标题、一个主按钮，下面是这台电脑上能用的 AI
-  function welcomeNode() {
-    // 装好的排在前面，没装的放后面
-    const rank = (id) => (envOf(id).installed ? 0 : 1);
-    const tools = [...CLI_TOOLS]
-      .sort((x, y) => (S.env ? rank(x) - rank(y) : 0))
-      .map((id) => {
-        const e = envOf(id);
-        const state = !S.env ? 'wait' : !e.installed ? 'no' : e.outdated ? 'old' : 'ok';
-        const note = !S.env ? tr('正在检测……') : !e.installed ? tr('这台电脑上还没装') : e.outdated ? tr('版本太旧，需要先升级') : esc(tr('已安装 {version}', { version: e.version || '' }));
-        const how = ADAPTERS[id].install;
-        const cmd = S.env && !e.installed && how ? (S.env.platform === 'win32' ? how.win : how.other) : '';
-        return `<li class="${state}"${cmd ? ` title="${esc(tr('安装命令：{cmd}', { cmd }))}"` : ''}><span class="tool-dot"></span><b>${ADAPTERS[id].label}</b><span class="what">${esc(ADAPTERS[id].what)}</span><span class="tool-note">${note}</span></li>`;
-      })
-      .join('');
-    const team = templatePreview('trio');
-    const demo = [
-      { name: tr('你'), me: true, sub: tr('提需求') },
-      ...team.map((t) => ({ name: t.name, sub: t.role, color: t.color })),
-    ];
-    const hops = demo
-      .map(
-        (h, i) =>
-          `<li class="hop ${i === 2 ? 'running' : i < 2 ? 'done' : 'queued'} ${h.me ? 'me' : ''}" style="--c:${h.color || 'var(--ink)'};--c-prev:${
-            i > 0 ? demo[i - 1].color || 'var(--ink)' : 'var(--rule)'
-          }"><span class="dot"></span>${esc(h.name)}<small>${esc(h.sub)}</small></li>`
-      )
-      .join('');
-    return el(`<div class="welcome"><div class="welcome-inner">
-      <div class="welcome-mark">${brandMark()}</div>
-      <h1>${tr('让几个 AI 在同一个项目里一起干活')}</h1>
-      <p class="lead">${tr('你提需求，它们自己分工：一个出设计，一个写代码，一个做审查。谁做完就在群里 @ 下一位，接力往下做。你随时可以插话、叫停。')}</p>
-      <div class="welcome-actions">
-        <button class="btn primary large" data-new-project>${ICONS.folders}${tr('新建项目')}</button>
-        <button class="btn large" data-new-standalone>${ICONS.plusCircle}${tr('新建会话')}</button>
-      </div>
-      <div class="welcome-card">
-        <ol class="relay-track demo">${hops}</ol>
-        <p class="demo-caption">${tr('一次接力：实心点是做完的成员，闪动的正在工作，空心的在排队。')}</p>
-      </div>
-      <div class="welcome-card">
-        <h2>${tr('这台电脑上能用的 AI')}</h2>
-        <ul class="tool-list">${tools}
-          <li class="ok"><span class="tool-dot"></span><b>${tr('API 模型')}</b><span class="what">${tr('DeepSeek、通义千问、Kimi、智谱、Ollama 等兼容 OpenAI 接口的模型')}</span><span class="tool-note">${tr('填地址和 Key 就能加入')}</span></li>
-        </ul>
-      </div>
-    </div></div>`);
+  // ---------- 主界面：一个还没建的新会话 ----------
+  // 打开 Nightshift、点「新建会话」都到这里。成员照搬 from 那个会话（默认是最近打开的会话；一个会话都没有时
+  // 按「设计 + 开发」配，和服务端一样），发第一条消息时才建会话（见 sendFromHome），所以不会留下空的会话
+  function homeTeam(from) {
+    const src = S.rooms.find((r) => r.id === from) || S.rooms.find((r) => r.id === local.get('agentchat.room')) || S.rooms[0];
+    if (src && src.agents.length) return { from: src.id, agents: src.agents, defaultAgent: src.defaultAgent || '' };
+    return { from: '', agents: templatePreview('duo').map((a) => ({ ...a, id: 'tpl:' + a.name })), defaultAgent: '' };
+  }
+
+  function goHome(from = S.roomId) {
+    S.loading = null; // 正在打开的会话不用再打开了
+    S.home = homeTeam(from);
+    S.homeGreet = null;
+    S.room = null;
+    S.roomId = null;
+    S.projectId = null;
+    S.messages = [];
+    S.state = null;
+    S.progress = null;
+    S.skills = [];
+    closeMembersPop();
+    $('#app').classList.remove('rail-open');
+    renderProjects();
+    renderMembers();
+    renderMain();
+    panel.onRoom();
+    loadSkills(null); // 主界面上用 / 选的是这台电脑上装好的技能
+    const input = inputEl();
+    if (input) input.focus();
+  }
+
+  // 主界面的问候：按时间段挑一句（周一早上、周五晚上、周末白天另有几句），带上你的名字。
+  // 进主界面时挑好记下来，之后重画（比如读到了名字）还是同一句；过了这个时间段再换
+  function greetings(name) {
+    const N = { name };
+    const d = new Date();
+    const h = d.getHours() + d.getMinutes() / 60;
+    const day = d.getDay();
+    if (day === 1 && h >= 5 && h < 12) return ['monday', [tr('{name}，新的一周开始了', N), tr('早上好，{name}', N)]];
+    if (day === 5 && h >= 18) return ['friday', [tr('周五了，{name}', N), tr('晚上好，{name}', N)]];
+    if ((day === 0 || day === 6) && h >= 9 && h < 18) return ['weekend', [tr('周末愉快，{name}', N), tr('{name}，今天想做点什么？', N)]];
+    if (h < 5) return ['late', [tr('夜深了，{name}', N), tr('还没睡呀，{name}', N), tr('{name}，夜班开始了', N), tr('星星都睡了，{name}', N)]];
+    if (h < 9) return ['dawn', [tr('早上好，{name}', N), tr('早安，{name}', N), tr('{name}，新的一天开始了', N), tr('起得真早，{name}', N)]];
+    if (h < 11.5) return ['morning', [tr('上午好，{name}', N), tr('{name}，今天想做点什么？', N), tr('精神不错，{name}', N)]];
+    if (h < 13.5) return ['noon', [tr('中午好，{name}', N), tr('吃过午饭了吗，{name}', N), tr('{name}，休息一下也不错', N)]];
+    if (h < 18) return ['afternoon', [tr('下午好，{name}', N), tr('{name}，来杯咖啡吗？', N), tr('下午也要加油，{name}', N)]];
+    if (h < 20) return ['dusk', [tr('傍晚好，{name}', N), tr('{name}，忙了一天辛苦了', N), tr('晚饭吃了吗，{name}', N)]];
+    if (h < 22) return ['evening', [tr('晚上好，{name}', N), tr('{name}，今晚做点什么？', N), tr('灯还亮着呢，{name}', N)]];
+    return ['night', [tr('夜深了，{name}', N), tr('这么晚还在忙，{name}', N), tr('{name}，夜班开始了', N), tr('{name}，今天也辛苦了', N)]];
+  }
+
+  function greeting() {
+    // 名字：设置里填的，没填就用这台电脑的用户名（boot.js 里就有，不用等检测 AI 工具）
+    const name = (S.settings && S.settings.name) || (S.env && S.env.user) || (window.__BOOT__ && window.__BOOT__.user) || '';
+    const [slot, list] = greetings(name);
+    if (!S.homeGreet || S.homeGreet.slot !== slot) S.homeGreet = { slot, i: Math.floor(Math.random() * list.length) };
+    const s = list[S.homeGreet.i];
+    // 没有名字：去掉名字两边的逗号（「早上好，」→「早上好」）
+    return name ? s : s.replace(/^[，,\s]+|[，,\s]+$/g, '').replace(/[，,]\s*([？?])$/, '$1');
   }
 
   function renderHeader() {
@@ -927,7 +955,7 @@
 
   function appMenu(anchor) {
     const items = [
-      { label: tr('新建会话'), icon: ICONS.plusCircle, run: () => newStandaloneChat() },
+      { label: tr('新建会话'), icon: ICONS.plusCircle, run: () => goHome() },
       { label: tr('新建项目'), icon: ICONS.folders, run: newProjectModal },
       { label: tr('重新检测 AI 工具'), icon: ICONS.refresh, run: () => redetect() },
     ];
@@ -965,7 +993,7 @@
     if (items.length) items.push('-');
     items.push(
       p.standalone
-        ? { label: tr('新建会话'), icon: ICONS.plusCircle, run: () => newStandaloneChat() }
+        ? { label: tr('新建会话'), icon: ICONS.plusCircle, run: () => goHome() }
         : { label: tr('新建会话'), icon: ICONS.plus, run: () => newConversation(p.id, S.roomId) }
     );
     if (S.room) {
@@ -992,7 +1020,7 @@
         { label: tr('重命名会话…'), icon: ICONS.edit, run: () => renameConversation(r) },
         { label: tr('会话设置…'), icon: ICONS.gear, run: () => conversationSettings(r.id) },
         alone
-          ? { label: tr('用相同的成员新建会话'), icon: ICONS.plusCircle, run: () => newStandaloneChat(r.id) }
+          ? { label: tr('用相同的成员新建会话'), icon: ICONS.plusCircle, run: () => goHome(r.id) }
           : { label: tr('用相同的成员新建会话…'), icon: ICONS.plus, run: () => newConversation(r.projectId, r.id) },
         ...(alone ? [{ label: tr('在文件管理器中打开'), icon: ICONS.open, run: () => api('POST', `/api/rooms/${r.id}/open`).catch((e) => toast(e.message, true)) }] : []),
         '-',
@@ -1038,14 +1066,10 @@
   function aboutModal() {
     const env = S.env || {};
     const body = el(`<div class="about">
-      <div class="about-brand">${brandMark()}<div><b>${esc(appName())}</b>
-        <span>${esc(tr('白天叫 Dayshift，晚上叫 Nightshift：名字和图标跟着浅色、深色外观一起换。'))}</span></div></div>
-      <p>${tr('让多个 AI（Claude Code、Codex、OpenCode、各种 API 模型）在同一个项目里分工协作、互相交流。')}</p>
+      <div class="about-brand">${brandMark()}<div><b>${esc(appName())}</b><span>${esc(env.version || '')}</span></div></div>
       <dl>
-        <dt>${tr('版本')}</dt><dd>${esc(env.version || '')}${env.desktop ? tr('（桌面版）') : tr('（浏览器版）')}</dd>
         ${desktop && desktop.updateState ? `<dt>${tr('更新')}</dt><dd class="about-update" data-about-update></dd>` : ''}
         <dt>${tr('数据保存在')}</dt><dd><code>${esc(env.dataDir || '')}</code></dd>
-        <dt>Node.js</dt><dd>${esc(env.node || '')}</dd>
       </dl></div>`);
     const m = openModal({ title: tr('关于 {app}', { app: appName() }), body });
     if (account) account.aboutUpdate($('[data-about-update]', body), m); // 自动更新的状态（见 account.js）
@@ -2044,7 +2068,7 @@
     if (waiting && list.some((a) => a.id === waiting)) return { ids: [waiting], how: 'reply' };
     if (st.running) return { ids: [st.running.agentId], how: 'running' };
     if (st.queue && st.queue.length) return { ids: [], how: 'queue' };
-    const def = list.find((a) => a.id === S.room.settings.defaultAgent) || list[0];
+    const def = list.find((a) => a.id === defaultAgentId()) || list[0];
     return { ids: [def.id], how: 'default' };
   }
 
@@ -2057,7 +2081,8 @@
     // 还没有成员时，按钮就是「添加成员」
     if (how === 'default' || how === 'none') {
       const a = agentById(ids[0]);
-      const html = a
+      // 主界面上没有成员可以照搬（这台电脑上也没检测到命令行 AI）：不显示，发出去以后在新会话里加成员
+      const html = !a && !S.roomId ? '' : a
         ? `<button type="button" class="to-pick" data-to-pick aria-haspopup="menu" title="${esc(tr('没有 @ 任何人时发给谁，点一下可以换成员'))}">
             <span class="avatar xs" style="--c:${a.color}">${esc(initial(a.name))}</span><span class="to-name">${esc(a.name)}</span>${ICONS.chevDown}</button>`
         : `<button type="button" class="to-pick" data-add-member title="${esc(tr('添加成员'))}">${ICONS.plus}<span class="to-name">${esc(tr('添加成员'))}</span></button>`;
@@ -2093,9 +2118,11 @@
 
   // 输入框右下角的成员选择：列出这个项目里参与接力的成员，选中的就是项目的「默认接收人」（项目设置里也能改）。
   // 鼠标停在成员上，旁边列出它能用的模型，点一下就换（像 Claude 的模型选择）
+  // 主界面上（新会话还没建）只能选发给谁：换模型、添加成员要等会话建好
   function toPicker(anchor) {
     const list = enabledAgents();
-    const cur = (list.find((a) => a.id === S.room.settings.defaultAgent) || list[0] || {}).id;
+    const cur = (list.find((a) => a.id === defaultAgentId()) || list[0] || {}).id;
+    const room = !!S.roomId;
     openMenu(
       anchor,
       [
@@ -2106,10 +2133,9 @@
           icon: `<span class="avatar sm" style="--c:${a.color}">${esc(initial(a.name))}</span>`,
           checked: a.id === cur,
           run: () => setDefaultAgent(a.id),
-          flyout: () => modelChoices(a),
+          ...(room ? { flyout: () => modelChoices(a) } : {}),
         })),
-        '-',
-        { label: tr('添加成员'), icon: ICONS.plus, run: () => memberModal(null) },
+        ...(room ? ['-', { label: tr('添加成员'), icon: ICONS.plus, run: () => memberModal(null) }] : []),
       ],
       { align: 'right', above: true }
     );
@@ -2156,6 +2182,11 @@
   }
 
   async function setDefaultAgent(id) {
+    // 主界面：记在 S.home 上，发第一条消息建好会话时再设（见 sendFromHome）
+    if (!S.room) {
+      if (S.home) S.home.defaultAgent = id;
+      return updateTo();
+    }
     if (S.room.settings.defaultAgent === id) return;
     const roomId = S.roomId;
     const room = await api('PATCH', `/api/rooms/${roomId}`, { settings: { defaultAgent: id } });
@@ -2170,7 +2201,7 @@
     if (!btn) return;
     const st = S.state || {};
     const busy = (!!st.running || (st.queue || []).length > 0 || !!st.review) && !st.paused;
-    const has = !!getText().trim() || (S.attach[S.roomId] || []).some((a) => !a.pending); // 只有附件也能发
+    const has = !!getText().trim() || (S.attach[draftKey()] || []).some((a) => !a.pending); // 只有附件也能发
     const mode = !has && busy ? 'stop' : 'send';
     const sig = mode + (has ? '1' : '0');
     if (btn.dataset.sig === sig) return;
@@ -2392,7 +2423,7 @@
     if (e && e.isComposing) return;
     normalizeEmpty();
     autoChip();
-    S.drafts[S.roomId] = getText();
+    S.drafts[draftKey()] = getText();
     updateTo();
     updatePop();
   }
@@ -2401,7 +2432,7 @@
     const form = $('#composer');
     const el = inputEl();
     if (!form || !el) return;
-    setText(S.drafts[S.roomId] || '');
+    setText(S.drafts[draftKey()] || '');
     renderAttach();
     updateTo();
     form.addEventListener('submit', (e) => {
@@ -2626,10 +2657,10 @@
     const el = inputEl();
     const text = getText(el).trim();
     const roomId = S.roomId;
-    if (!roomId) return;
-    const atts = attachList(roomId);
+    const atts = attachList(draftKey());
     if (atts.some((a) => a.pending)) return toast(tr('附件还在添加，等一下再发'), true);
     if (!text && !atts.length) return;
+    if (!roomId) return sendFromHome(text, atts);
     el.innerHTML = '';
     S.drafts[roomId] = '';
     S.attach[roomId] = [];
@@ -2652,12 +2683,58 @@
     }
   }
 
+  // 主界面上发第一条消息：这时才建会话（不属于哪个项目，不用选文件夹），成员照搬 S.home.from 那个会话（见 goHome）。
+  // 主界面上换过「发给谁」的，在新会话里对上同名的成员；记着的附件添加到新会话里，再把消息发出去，然后打开这个会话。
+  // 会话建好了、后面出了错（比如附件太大）：照样打开它，话放回它的输入框，免得再发一次又多建一个
+  let homeSending = false;
+  async function sendFromHome(text, staged) {
+    if (homeSending) return;
+    homeSending = true;
+    const home = S.home || { from: '', agents: [], defaultAgent: '' };
+    const input = inputEl();
+    input.innerHTML = '';
+    S.drafts.home = '';
+    S.attach.home = [];
+    renderAttach();
+    updateTo();
+    closePop();
+    let room = null;
+    try {
+      room = await api('POST', '/api/chats', { from: home.from || '' });
+      const pick = home.agents.find((a) => a.id === home.defaultAgent);
+      const mate = pick && room.agents.find((a) => a.name === pick.name);
+      if (mate && mate.id !== room.settings.defaultAgent) await api('PATCH', `/api/rooms/${room.id}`, { settings: { defaultAgent: mate.id } });
+      const paths = staged.flatMap((a) => a.paths || []);
+      const items = paths.length ? (await api('POST', `/api/rooms/${room.id}/attachments`, { paths })).items : [];
+      for (const a of staged) if (a.uploads) items.push(...(await uploadEntries(room.id, a.uploads)));
+      const attachments = items.map(({ path, name, kind, size, count, from }) => ({ path, name, kind, size, count, from }));
+      await api('POST', `/api/rooms/${room.id}/messages`, { text, attachments });
+      await refreshRooms();
+      await openRoom(room.id);
+    } catch (e) {
+      if (room) {
+        S.drafts[room.id] = text;
+        await refreshRooms();
+        await openRoom(room.id);
+      } else if (!S.roomId) {
+        if (!getText(inputEl()).trim()) setText(text);
+        S.drafts.home = getText(inputEl());
+        if (!attachList('home').length) S.attach.home = staged;
+        renderAttach();
+      }
+      toast(e.message, true);
+    } finally {
+      homeSending = false;
+    }
+  }
+
   // ---------- 附件：拖进对话区、或者点输入框左下角的「+」添加的文件和文件夹 ----------
   // 桌面版拿得到文件在电脑上的位置，交给服务端：项目里的直接用，项目外的复制进 .agentchat/attachments（见 files.js 的 attach）；
-  // 拿不到位置的（浏览器里，或者从网页上拖来的图片）把内容传上去。还没发出去的附件跟着会话记着，去掉的话复制过来的那份也删掉
+  // 拿不到位置的（浏览器里，或者从网页上拖来的图片）把内容传上去。还没发出去的附件跟着会话记着，去掉的话复制过来的那份也删掉。
+  // 主界面上新会话还没建、没地方放：先记着（staged：路径或者文件），发送时建好会话再添加（见 sendFromHome）
   const MAX_UPLOAD = 200 * 1024 * 1024; // 和服务端的上限一样
   let attachSeq = 0;
-  const attachList = (roomId = S.roomId) => S.attach[roomId] || (S.attach[roomId] = []);
+  const attachList = (key = draftKey()) => S.attach[key] || (S.attach[key] = []);
   const baseName = (p) => String(p).split(/[\\/]/).filter(Boolean).pop() || String(p);
   // 附件下面那一小行：文件写大小；文件夹写「文件夹」，复制过来的再写有几个文件
   const attachMeta = (a) =>
@@ -2672,7 +2749,7 @@
     box.innerHTML = list
       .map((a) => {
         if (a.pending) return `<span class="att pending"><span class="att-ico"><i class="att-spin"></i></span><span class="att-name">${esc(a.name)}</span><span class="att-meta">${esc(tr('正在添加……'))}</span></span>`;
-        const tip = a.from || a.uploaded ? tr('项目外的文件，复制了一份放在 {path}', { path: a.path }) : a.path;
+        const tip = a.staged ? (a.paths || [a.name])[0] : a.from || a.uploaded ? tr('项目外的文件，复制了一份放在 {path}', { path: a.path }) : a.path;
         return `<span class="att" title="${esc(tip)}"><span class="att-ico k-${a.kind === 'dir' ? 'dir' : fileType(a.name).kind}">${attachIcon(a)}</span><span class="att-name">${esc(a.name)}</span>${
           attachMeta(a) ? `<span class="att-meta">${esc(attachMeta(a))}</span>` : ''
         }<button type="button" class="att-x" data-att-remove="${a.id}" title="${esc(tr('去掉'))}" aria-label="${esc(tr('去掉 {name}', { name: a.name }))}">${ICONS.close}</button></span>`;
@@ -2699,7 +2776,11 @@
 
   async function attachPaths(paths) {
     const roomId = S.roomId;
-    if (!roomId || !paths.length) return;
+    if (!paths.length) return;
+    if (!roomId) {
+      attachList('home').push(...paths.map((p) => ({ id: ++attachSeq, staged: true, paths: [p], name: baseName(p) })));
+      return renderAttach();
+    }
     const ph = pendingFor(roomId, paths.map(baseName));
     try {
       const { items } = await api('POST', `/api/rooms/${roomId}/attachments`, { paths });
@@ -2713,33 +2794,50 @@
   // entries：[{ file, path }]，path 是相对路径（整个文件夹拖进来时，里面的文件带着文件夹名，比如 assets/logo.png）
   async function attachUploads(entries) {
     const roomId = S.roomId;
-    if (!roomId || !entries.length) return;
+    if (!entries.length) return;
     const tops = [...new Set(entries.map((x) => x.path.split('/')[0]))];
+    if (!roomId) {
+      // 一个顶层的文件或文件夹记一项，大小和文件数先按本地的算
+      attachList('home').push(
+        ...tops.map((top) => {
+          const mine = entries.filter((x) => x.path === top || x.path.startsWith(top + '/'));
+          const dir = mine.some((x) => x.path !== top);
+          const size = mine.reduce((n, x) => n + x.file.size, 0);
+          return { id: ++attachSeq, staged: true, uploads: mine, name: top, kind: dir ? 'dir' : 'file', size, ...(dir ? { count: mine.length } : {}) };
+        })
+      );
+      return renderAttach();
+    }
     const ph = pendingFor(roomId, tops);
     try {
-      const big = entries.find((x) => x.file.size > MAX_UPLOAD);
-      if (big) throw new Error(tr('「{name}」太大了，单个文件最多 {mb} MB', { name: big.file.name, mb: MAX_UPLOAD / 1024 / 1024 }));
-      let batch = 'new';
-      let base = '';
-      const sizes = {};
-      const counts = {};
-      for (const x of entries) {
-        const r = await upload(`/api/rooms/${roomId}/attachments/upload?batch=${encodeURIComponent(batch)}&path=${encodeURIComponent(x.path)}`, x.file);
-        batch = r.batch;
-        base = r.base;
-        const top = x.path.split('/')[0];
-        sizes[top] = (sizes[top] || 0) + r.size;
-        counts[top] = (counts[top] || 0) + 1;
-      }
-      const items = tops.map((top) => {
-        const dir = entries.some((x) => x.path.startsWith(top + '/'));
-        return { path: `${base}/${top}`, name: top, kind: dir ? 'dir' : 'file', size: sizes[top], ...(dir ? { count: counts[top] } : {}), uploaded: true };
-      });
-      replacePending(roomId, ph, items);
+      replacePending(roomId, ph, await uploadEntries(roomId, entries));
     } catch (e) {
       replacePending(roomId, ph, []);
       toast(e.message, true);
     }
+  }
+
+  // 把文件一个个传到这个会话的项目文件夹里（同一批），返回附件：一个顶层的文件或文件夹一项
+  async function uploadEntries(roomId, entries) {
+    const big = entries.find((x) => x.file.size > MAX_UPLOAD);
+    if (big) throw new Error(tr('「{name}」太大了，单个文件最多 {mb} MB', { name: big.file.name, mb: MAX_UPLOAD / 1024 / 1024 }));
+    const tops = [...new Set(entries.map((x) => x.path.split('/')[0]))];
+    let batch = 'new';
+    let base = '';
+    const sizes = {};
+    const counts = {};
+    for (const x of entries) {
+      const r = await upload(`/api/rooms/${roomId}/attachments/upload?batch=${encodeURIComponent(batch)}&path=${encodeURIComponent(x.path)}`, x.file);
+      batch = r.batch;
+      base = r.base;
+      const top = x.path.split('/')[0];
+      sizes[top] = (sizes[top] || 0) + r.size;
+      counts[top] = (counts[top] || 0) + 1;
+    }
+    return tops.map((top) => {
+      const dir = entries.some((x) => x.path.startsWith(top + '/'));
+      return { path: `${base}/${top}`, name: top, kind: dir ? 'dir' : 'file', size: sizes[top], ...(dir ? { count: counts[top] } : {}), uploaded: true };
+    });
   }
 
   // 上传一个文件：请求体就是文件内容
@@ -2834,7 +2932,8 @@
   // 拖文件进来：拖到对话区（中间一栏）的任何地方都行，盖上一层提示，松手就添加。
   // 拖到别处松手什么也不做（不然桌面版会用默认程序打开这个文件，浏览器会跳到这个文件）
   const dragHasFiles = (e) => !!e.dataTransfer && [...e.dataTransfer.types].includes('Files');
-  const inChat = (e) => !!(S.room && e.target instanceof Element && e.target.closest('#main'));
+  // 会话里，或者主界面上（新会话还没建，附件先记着）；项目的空白页上没有输入框
+  const inChat = (e) => !!((S.room || (!S.projectId && $('#composer'))) && e.target instanceof Element && e.target.closest('#main'));
   const showDrop = (on) => {
     const z = $('#dropZone');
     if (z) z.hidden = !on;
@@ -2879,6 +2978,7 @@
       closeMembersPop();
       S.roomId = id;
       S.room = data.room;
+      S.home = null;
       S.projectId = data.room.projectId || null;
       // 打开的会话所在的项目要展开，不然在左边找不到它
       if (S.projectId && collapsed.has(S.projectId)) {
@@ -2924,33 +3024,6 @@
     else collapsed.add(pid);
     saveCollapsed();
     renderProjects();
-  }
-
-  // 新建会话（左边栏最上面那个，不属于哪个项目）：不用选文件夹，点一下就建好打开，文件夹由 Nightshift 自己建。
-  // 成员照搬 from 那个会话（默认是正在看的），它没有成员时按「设计 + 开发」配，之后在标题栏的成员面板里改。
-  // 正在看的就是这样一个还没发过消息的会话时，不再多建一个空的
-  let creatingChat = false;
-  async function newStandaloneChat(from = S.roomId) {
-    if (creatingChat) return;
-    if (S.room && S.room.standalone && from === S.roomId && !S.messages.length) {
-      const input = $('#input');
-      if (input) input.focus();
-      return;
-    }
-    creatingChat = true;
-    try {
-      const room = await api('POST', '/api/chats', { from: from || '' });
-      await refreshRooms();
-      await openRoom(room.id);
-      const row = $(`#projects [data-room="${room.id}"]`);
-      if (row) row.scrollIntoView({ block: 'nearest' });
-      const input = $('#input');
-      if (input) input.focus();
-    } catch (e) {
-      toast(e.message, true);
-    } finally {
-      creatingChat = false;
-    }
   }
 
   // 在项目里新建会话：先在弹窗里起名字（不填就等发第一条消息时自动起），再选成员从哪来。
@@ -3033,7 +3106,8 @@
     setTimeout(() => $('#rn-name', body).select(), 0);
   }
 
-  // 删掉会话以后：打开同一个项目里的另一个会话；没有了就停在这个项目的空白页
+  // 删掉会话以后：打开同一个项目里的另一个会话；没有了就停在这个项目的空白页。
+  // 不属于项目的会话（项目跟着删了）回到主界面
   async function afterRoomGone(pid) {
     S.room = null;
     S.roomId = null;
@@ -3041,10 +3115,7 @@
     await refreshRooms();
     const p = projectById(pid);
     if (p && p.rooms[0]) return openRoom(p.rooms[0].id);
-    if (!p) {
-      S.projectId = null;
-      if (S.rooms[0]) return openRoom(S.rooms[0].id);
-    }
+    if (!p) return goHome(null);
     renderMembers();
     renderMain();
     renderHeader();
@@ -3087,15 +3158,7 @@
         S.projectId = null;
       }
       await refreshRooms();
-      if (!S.roomId) {
-        if (S.rooms[0]) await openRoom(S.rooms[0].id);
-        else {
-          renderMembers();
-          renderMain();
-          renderHeader();
-          panel.onRoom();
-        }
-      }
+      if (!S.roomId) goHome(null); // 删的是正在看的项目：回到主界面
       toast(tr('项目已删除'));
     } catch (e) {
       toast(e.message, true);
@@ -4136,7 +4199,7 @@
     try {
       if (d.room) return openRoom(d.room);
       if ('newProject' in d) return newProjectModal();
-      if ('newStandalone' in d) return newStandaloneChat();
+      if ('newStandalone' in d) return goHome(); // 新建会话：回到主界面，发第一条消息时才建
       if (d.projToggle) return toggleProject(d.projToggle);
       if (d.newChat) return newConversation(d.newChat, S.room && S.room.projectId === d.newChat ? S.roomId : null);
       if (d.projMenu) {
@@ -4357,8 +4420,6 @@
       if ((S.roomId && !S.rooms.some((r) => r.id === S.roomId)) || (S.projectId && !projectById(S.projectId))) return afterRoomGone(S.projectId);
       renderProjects();
       updateTitlebar();
-      // 还停在首页时出现了会话（比如在另一个窗口里新建的），直接打开它
-      if (!S.roomId && !S.projectId && S.rooms[0]) openRoom(S.rooms[0].id);
     });
     on('settings', (next) => {
       const langChanged = next.language && next.language !== window.I18N.lang;
@@ -4576,15 +4637,19 @@
       toast(e.message, true);
     }
     renderProjects();
-    const saved = local.get('agentchat.room');
-    const pick = S.rooms.find((r) => r.id === saved) || S.rooms[0];
-    if (pick) await openRoom(pick.id);
-    else renderMain();
+    // 打开就是主界面（一个还没建的新会话），成员照搬最近打开的那个会话
+    goHome(local.get('agentchat.room'));
     try {
       S.env = await api('GET', '/api/env');
     } catch {}
     renderEnv();
-    if (!S.room) renderMain();
+    // 还在主界面上：读到了 AI 工具（没有会话可以照搬时，成员按检测到的工具配）。打了一半的字留着
+    if (!S.room && !S.projectId) {
+      if (S.home && !S.home.from) S.home = homeTeam(null);
+      const g = $('#homeGreet');
+      if (g) g.textContent = greeting(); // 还是同一句，名字可能这时才读到
+      updateTo();
+    }
   }
 
   boot();

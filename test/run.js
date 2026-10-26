@@ -1769,6 +1769,7 @@ test('设置和用量接口；换了语言，服务端的报错和 boot.js 跟�
     assert.match((await call('POST', '/api/rooms', { name: '' })).json().error, /请给项目起个名字/);
     let boot = (await call('GET', '/boot.js')).text;
     assert.match(boot, /window\.__BOOT__ = \{"settings"/);
+    assert.match(boot, /"user":"/, '主界面打招呼用的用户名，不用等检测 AI 工具');
     assert.doesNotMatch(boot, /I18N\.preload/);
     const s = (await call('PATCH', '/api/settings', { language: 'en', theme: 'dark', name: 'Lau' })).json();
     assert.strictEqual(s.language, 'en');
@@ -1802,6 +1803,9 @@ test('设置和用量接口；换了语言，服务端的报错和 boot.js 跟�
       await call('POST', `/api/rooms/${rid}/agents`, { name: 'DS', adapter: 'openai', model: 'deepseek-chat', permission: 'edit', enabled: false, api: { baseUrl: 'http://127.0.0.1:9/v1', apiKey: 'sk-test' } })
     ).json();
     await call('PATCH', `/api/rooms/${rid}`, { settings: { defaultAgent: ag.id, maxAutoTurns: 7 } });
+    // 左边栏的列表里带着成员的模型、停没停用和默认接收人：主界面上的新会话照搬最近的会话，输入框要用到
+    const sum = (await call('GET', '/api/projects')).json().find((p) => p.id === made.project.id).rooms.find((r) => r.id === rid);
+    assert.deepStrictEqual([sum.defaultAgent, sum.agents[0].model, sum.agents[0].enabled], [ag.id, 'deepseek-chat', false]);
     // 成员需要你确认时：只收三种，默认人工审查。审查模型可以是会话成员，也可以专门接入一个（只读，Key 打码）
     assert.strictEqual(made.room.settings.approval, 'manual');
     assert.strictEqual((await call('PATCH', `/api/rooms/${rid}`, { settings: { approval: 'yolo' } })).status, 400);

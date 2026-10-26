@@ -116,8 +116,10 @@ function roomSummary(room) {
     pinned: !!room.pinned,
     workspace: room.workspace,
     updatedAt: room.updatedAt,
-    // 新建会话的弹窗里「照搬某个会话的成员」要显示每个成员的职责和工具
-    agents: room.agents.map((a) => ({ id: a.id, name: a.name, color: a.color, role: a.role || '', adapter: a.adapter })),
+    // 新建会话的弹窗里「照搬某个会话的成员」要显示每个成员的职责和工具；
+    // 主界面（还没建的新会话）照搬最近的会话，输入框里要用到成员、模型和默认接收人
+    agents: room.agents.map((a) => ({ id: a.id, name: a.name, color: a.color, role: a.role || '', adapter: a.adapter, model: a.model || '', enabled: a.enabled !== false })),
+    defaultAgent: room.settings.defaultAgent || '',
     approval: approvalMode(room), // 自动执行的会话，成员 @用户 时先不弹「需要你」的通知，等审查结果
     busy: orch.isBusy(room.id),
     last: last
@@ -1155,7 +1157,12 @@ function readBody(req) {
 // 界面在 app.js 之前载入 boot.js：设置和语言词典直接写在里面，界面一载入就是对的语言和外观
 function bootScript() {
   const st = settings.get();
-  const lines = [`window.__BOOT__ = ${JSON.stringify({ settings: st })};`];
+  // user：这台电脑的用户名，主界面打招呼用（没在设置里填名字时），不用等 /api/env 检测完 AI 工具
+  let user = '';
+  try {
+    user = os.userInfo().username;
+  } catch {}
+  const lines = [`window.__BOOT__ = ${JSON.stringify({ settings: st, user })};`];
   const d = i18n.dict(st.language);
   if (d) lines.push(`window.I18N.preload(${JSON.stringify(st.language)}, ${JSON.stringify(d)});`);
   lines.push(`window.I18N.setLang(${JSON.stringify(st.language)});`);
