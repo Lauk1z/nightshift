@@ -827,6 +827,7 @@
   "在成员设置里换模型…": "Change the model in member settings…",
   "自己输入的": "Typed in",
   "{name} 下一轮开始用 {model}": "{name} will use {model} from the next turn",
+  "新会话里 {name} 用 {model}": "{name} will use {model} in the new chat",
   "（新模型不支持原来的思考强度，改回了默认）": " (the new model doesn't support the previous thinking effort, so it's back to default)",
   "本机能用的 AI 工具：{n} 个，另有 {old} 个版本太旧。点开看版本、重新检测": "{n} AI {n|tool|tools} available on this computer, plus {old} with an outdated version. Click to see versions or re-detect",
   "不用选文件夹，直接开始一个会话": "Start a chat without picking a folder",

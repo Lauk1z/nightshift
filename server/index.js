@@ -116,9 +116,18 @@ function roomSummary(room) {
     pinned: !!room.pinned,
     workspace: room.workspace,
     updatedAt: room.updatedAt,
-    // 新建会话的弹窗里「照搬某个会话的成员」要显示每个成员的职责和工具；
-    // 主界面（还没建的新会话）照搬最近的会话，输入框里要用到成员、模型和默认接收人
-    agents: room.agents.map((a) => ({ id: a.id, name: a.name, color: a.color, role: a.role || '', adapter: a.adapter, model: a.model || '', enabled: a.enabled !== false })),
+    // 新建会话的弹窗里「照搬某个会话的成员」要显示每个成员的职责和工具；「用相同的成员新建会话」时主界面照搬这个会话，
+    // 输入框里要用到成员、模型（换模型时还要看原来的思考强度）和默认接收人
+    agents: room.agents.map((a) => ({
+      id: a.id,
+      name: a.name,
+      color: a.color,
+      role: a.role || '',
+      adapter: a.adapter,
+      model: a.model || '',
+      effort: a.effort || '',
+      enabled: a.enabled !== false,
+    })),
     defaultAgent: room.settings.defaultAgent || '',
     approval: approvalMode(room), // 自动执行的会话，成员 @用户 时先不弹「需要你」的通知，等审查结果
     busy: orch.isBusy(room.id),
@@ -238,8 +247,25 @@ const NAMES = { codex: 'GPT', claude: 'Claude', opencode: 'OpenCode', gemini: 'G
 
 function templateAgents(kind, env) {
   if (kind === 'blank') return [];
-  const ROLE = ROLES();
   const has = (id) => env[id] && env[id].installed;
+  // all：这台电脑上装好的每个命令行工具一个成员，不分工（主界面上的新会话）。顺序和界面上列工具的一样
+  if (kind === 'all') {
+    return adapters.list
+      .map((a) => a.id)
+      .filter((id) => NAMES[id] && has(id))
+      .map((adapter, i) => ({
+        id: newId('a'),
+        name: NAMES[adapter],
+        adapter,
+        model: '',
+        role: '',
+        instructions: '',
+        permission: 'edit',
+        color: PALETTE[i % PALETTE.length],
+        enabled: true,
+      }));
+  }
+  const ROLE = ROLES();
   const first = (...ids) => ids.find(has);
   const plan = [
     // 每个角色按顺序找这台电脑上装了的工具
@@ -487,8 +513,9 @@ route('DELETE', '/api/projects/:id', async (req, { params }) => {
 });
 
 // ---------- 不属于项目的会话：左边栏的「新建会话」，不用选文件夹 ----------
-// 文件夹由 Nightshift 建在数据文件夹的 chats 里。成员照搬 from 那个会话（一般是正在看的会话），
-// 那个会话没有成员时按「设计 + 开发」配；也可以指定团队模板
+// 文件夹由 Nightshift 建在数据文件夹的 chats 里。成员按团队模板配（主界面用 all：装好的每个 AI 一个），
+// 或者照搬 from 那个会话（「用相同的成员新建会话」），都没有时按「设计 + 开发」配。
+// 主界面上换过的模型（models：{ 成员名: { model, effort } }）和选的「发给谁」（to：成员名）按名字对上，一个会话里名字不重复
 async function createChat(body) {
   const from = body.from && store.getRoom(body.from);
   let agents;
@@ -497,6 +524,13 @@ async function createChat(body) {
   if (body.template) agents = templateAgents(body.template, body.template === 'blank' ? {} : await adapters.detectAll());
   else if (from && from.agents.length) ({ agents, settings, reviewer } = copyAgents(from));
   else agents = templateAgents('duo', await adapters.detectAll());
+  const picks = body.models && typeof body.models === 'object' ? body.models : {};
+  agents = agents.map((a) => {
+    const p = Object.prototype.hasOwnProperty.call(picks, a.name) && picks[a.name];
+    return p && typeof p === 'object' ? cleanAgent({ model: p.model, effort: p.effort }, { agents }, a) : a;
+  });
+  const to = body.to && agents.find((a) => a.name === body.to);
+  if (to) settings = { ...settings, defaultAgent: to.id };
   const workspace = path.join(DATA, 'chats', newId('c'));
   fs.mkdirSync(workspace, { recursive: true });
   const project = store.createProject({ name: tr('新会话'), workspace, standalone: true });

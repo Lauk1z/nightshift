@@ -1803,9 +1803,9 @@ test('设置和用量接口；换了语言，服务端的报错和 boot.js 跟�
       await call('POST', `/api/rooms/${rid}/agents`, { name: 'DS', adapter: 'openai', model: 'deepseek-chat', permission: 'edit', enabled: false, api: { baseUrl: 'http://127.0.0.1:9/v1', apiKey: 'sk-test' } })
     ).json();
     await call('PATCH', `/api/rooms/${rid}`, { settings: { defaultAgent: ag.id, maxAutoTurns: 7 } });
-    // 左边栏的列表里带着成员的模型、停没停用和默认接收人：主界面上的新会话照搬最近的会话，输入框要用到
+    // 左边栏的列表里带着成员的模型、思考强度、停没停用和默认接收人：「用相同的成员新建会话」时主界面照搬这个会话，输入框要用到
     const sum = (await call('GET', '/api/projects')).json().find((p) => p.id === made.project.id).rooms.find((r) => r.id === rid);
-    assert.deepStrictEqual([sum.defaultAgent, sum.agents[0].model, sum.agents[0].enabled], [ag.id, 'deepseek-chat', false]);
+    assert.deepStrictEqual([sum.defaultAgent, sum.agents[0].model, sum.agents[0].effort, sum.agents[0].enabled], [ag.id, 'deepseek-chat', '', false]);
     // 成员需要你确认时：只收三种，默认人工审查。审查模型可以是会话成员，也可以专门接入一个（只读，Key 打码）
     assert.strictEqual(made.room.settings.approval, 'manual');
     assert.strictEqual((await call('PATCH', `/api/rooms/${rid}`, { settings: { approval: 'yolo' } })).status, 400);
@@ -1867,6 +1867,30 @@ test('设置和用量接口；换了语言，服务端的报错和 boot.js 跟�
     assert.deepStrictEqual((await call('POST', '/api/chats', { template: 'blank' })).json().agents, []);
     const looseOf = async () => (await call('GET', '/api/projects')).json().filter((p) => p.standalone);
     assert.strictEqual((await call('GET', '/api/projects')).json().find((p) => p.id === made.project.id).standalone, false);
+    // 主界面上的新会话：装好的每个命令行 AI 一个成员，不分工（这台电脑装了哪些就是哪些，顺序和界面上一样）
+    const installed = ['claude', 'codex', 'opencode', 'gemini', 'grok', 'pi', 'hermes', 'dsh'].filter((id) => env.adapters[id].installed);
+    const allChat = (await call('POST', '/api/chats', { template: 'all' })).json();
+    assert.deepStrictEqual(allChat.agents.map((a) => [a.adapter, a.role, a.instructions]), installed.map((id) => [id, '', '']));
+    assert.strictEqual(new Set(allChat.agents.map((a) => a.name)).size, installed.length);
+    // 主界面上换的模型、选的「发给谁」按成员名字带过去，对不上的名字不管；模型名不对的不建会话
+    const src = (await call('POST', '/api/chats', { template: 'blank' })).json();
+    await call('POST', `/api/rooms/${src.id}/agents`, { name: 'DS', adapter: 'openai', model: 'deepseek-chat', api: { baseUrl: 'http://127.0.0.1:9/v1', apiKey: 'sk-test' } });
+    await call('POST', `/api/rooms/${src.id}/agents`, { name: 'Coder', adapter: 'claude' });
+    const picked = (
+      await call('POST', '/api/chats', { from: src.id, models: { DS: { model: 'deepseek-reasoner', effort: 'high' }, Nobody: { model: 'x' } }, to: 'Coder' })
+    ).json();
+    assert.deepStrictEqual(
+      picked.agents.map((a) => [a.name, a.model || '', a.effort || '']),
+      [
+        ['DS', 'deepseek-reasoner', 'high'],
+        ['Coder', '', ''],
+      ]
+    );
+    assert.strictEqual(picked.settings.defaultAgent, picked.agents[1].id);
+    const loose = (await looseOf()).length;
+    assert.strictEqual((await call('POST', '/api/chats', { from: src.id, models: { DS: { model: 'bad model!' } } })).status, 400);
+    assert.strictEqual((await looseOf()).length, loose, '出错时不留下空会话');
+    for (const c of [allChat, src, picked]) await call('DELETE', `/api/rooms/${c.id}`);
     await call('POST', `/api/rooms/${chat.id}/messages`, { text: '@DS 随便问问：正则怎么匹配邮箱' });
     const cp = (await looseOf()).find((p) => p.id === chat.projectId);
     assert.deepStrictEqual([cp.name, cp.rooms.map((r) => r.id)], ['随便问问：正则怎么匹配邮箱', [chat.id]]);

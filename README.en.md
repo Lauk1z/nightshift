@@ -45,7 +45,7 @@ The installed version updates itself: once a new version has downloaded in the b
 
 ## Getting started
 
-Nightshift opens on a new chat: type what you need and send it, no folder required. It gets the members of the chat you opened most recently (or, the first time, a team made from the AIs on this computer), and its files go in a folder Nightshift makes for it. "New chat" in the sidebar brings you back here any time.
+Nightshift opens on a new chat: type what you need and send it, no folder required. Every AI installed on this computer is a member, with no roles assigned. Pick who goes first at the bottom right of the message box, and hover over it to switch models; your next new chat starts with the same choices. The chat's files go in a folder Nightshift makes for it. "New chat" in the sidebar brings you back here any time.
 
 To work on your own code, click "New project" and pick a folder. A project can hold several chats that share the folder, each with its own members and history.
 

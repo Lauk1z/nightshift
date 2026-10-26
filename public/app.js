@@ -413,6 +413,7 @@
     }
     S.catalogs = {};
     if (S.roomId) loadSkills(S.roomId, true); // 新装的技能也重新读一遍
+    if (S.home && !S.home.from) S.home = homeTeam(null); // 主界面的成员就是装好的工具：新装的加进来
     renderEnv();
     renderMembers();
     if (!S.room) renderMain();
@@ -778,17 +779,55 @@
   }
 
   // ---------- 主界面：一个还没建的新会话 ----------
-  // 打开 Nightshift、点「新建会话」都到这里。成员照搬 from 那个会话（默认是最近打开的会话；一个会话都没有时
-  // 按「设计 + 开发」配，和服务端一样），发第一条消息时才建会话（见 sendFromHome），所以不会留下空的会话
+  // 打开 Nightshift、点「新建会话」都到这里，发第一条消息时才建会话（见 sendFromHome），所以不会留下空的会话。
+  // 成员是这台电脑上装好的每个命令行 AI，不分工（和服务端的 all 模板一样）。在这里选的「发给谁」、换的模型记下来，
+  // 下次的新会话接着用。「用相同的成员新建会话」（from）照搬那个会话的成员
+  const HOME_PICKS = 'agentchat.home';
+  function homePicks() {
+    try {
+      const p = JSON.parse(local.get(HOME_PICKS) || '{}');
+      return { to: typeof p.to === 'string' ? p.to : '', models: p.models && typeof p.models === 'object' ? p.models : {} };
+    } catch {
+      return { to: '', models: {} };
+    }
+  }
+  function saveHomePicks() {
+    if (!S.home || S.home.from) return; // 照搬来的成员只管这一次
+    const p = homePicks();
+    const to = agentById(S.home.defaultAgent);
+    if (to) p.to = to.adapter;
+    for (const a of S.home.agents) {
+      if (a.model) p.models[a.adapter] = a.model;
+      else delete p.models[a.adapter];
+    }
+    local.set(HOME_PICKS, JSON.stringify(p));
+  }
   function homeTeam(from) {
-    const src = S.rooms.find((r) => r.id === from) || S.rooms.find((r) => r.id === local.get('agentchat.room')) || S.rooms[0];
-    if (src && src.agents.length) return { from: src.id, agents: src.agents, defaultAgent: src.defaultAgent || '' };
-    return { from: '', agents: templatePreview('duo').map((a) => ({ ...a, id: 'tpl:' + a.name })), defaultAgent: '' };
+    const src = from && S.rooms.find((r) => r.id === from);
+    if (src && src.agents.length) return { from: src.id, agents: src.agents.map((a) => ({ ...a })), defaultAgent: src.defaultAgent || '' };
+    const picks = homePicks();
+    const agents = CLI_TOOLS.filter((id) => envOf(id).installed).map((adapter, i) => ({
+      id: 'home:' + adapter,
+      name: NAMES[adapter],
+      adapter,
+      model: typeof picks.models[adapter] === 'string' ? picks.models[adapter] : '',
+      role: '',
+      color: PALETTE[i % PALETTE.length],
+      enabled: true,
+    }));
+    const to = agents.find((a) => a.adapter === picks.to) || agents[0];
+    return { from: '', agents, defaultAgent: to ? to.id : '' };
+  }
+  // 换过模型的成员：在后台读它的模型目录，选成员的菜单里就能显示模型的正式名字
+  function loadHomeCatalogs() {
+    const used = S.home ? S.home.agents.filter((a) => a.model && a.adapter !== 'openai').map((a) => a.adapter) : [];
+    for (const ad of new Set(used)) loadCatalog(ad);
   }
 
-  function goHome(from = S.roomId) {
+  function goHome(from = null) {
     S.loading = null; // 正在打开的会话不用再打开了
     S.home = homeTeam(from);
+    loadHomeCatalogs();
     S.homeGreet = null;
     S.room = null;
     S.roomId = null;
@@ -2117,8 +2156,8 @@
   }
 
   // 输入框右下角的成员选择：列出这个项目里参与接力的成员，选中的就是项目的「默认接收人」（项目设置里也能改）。
-  // 鼠标停在成员上，旁边列出它能用的模型，点一下就换（像 Claude 的模型选择）
-  // 主界面上（新会话还没建）只能选发给谁：换模型、添加成员要等会话建好
+  // 鼠标停在成员上，旁边列出它能用的模型，点一下就换（像 Claude 的模型选择）。
+  // 主界面上（新会话还没建）也一样，换的是新会话里的成员；添加成员要等会话建好
   function toPicker(anchor) {
     const list = enabledAgents();
     const cur = (list.find((a) => a.id === defaultAgentId()) || list[0] || {}).id;
@@ -2133,7 +2172,7 @@
           icon: `<span class="avatar sm" style="--c:${a.color}">${esc(initial(a.name))}</span>`,
           checked: a.id === cur,
           run: () => setDefaultAgent(a.id),
-          ...(room ? { flyout: () => modelChoices(a) } : {}),
+          flyout: () => modelChoices(a),
         })),
         ...(room ? ['-', { label: tr('添加成员'), icon: ICONS.plus, run: () => memberModal(null) }] : []),
       ],
@@ -2142,11 +2181,13 @@
   }
 
   // 成员能换的模型：和成员设置里「模型」那一栏是同一份目录。API 模型的模型名要在成员设置里填
+  // （主界面上还没有会话，打不开成员设置）
   async function modelChoices(a) {
     const head = { label: tr('{name} 用的模型', { name: a.name }), header: true };
-    const more = { label: tr('成员设置…'), icon: ICONS.gear, run: () => memberModal(agentById(a.id) || a) };
+    const more = S.room ? { label: tr('成员设置…'), icon: ICONS.gear, run: () => memberModal(agentById(a.id) || a) } : null;
     if (a.adapter === 'openai') {
-      return [head, { label: a.model || tr('还没有填写模型名称'), checked: !!a.model, disabled: true, run() {} }, '-', { ...more, label: tr('在成员设置里换模型…') }];
+      const fixed = { label: a.model || tr('还没有填写模型名称'), checked: !!a.model, disabled: true, run() {} };
+      return [head, fixed, ...(more ? ['-', { ...more, label: tr('在成员设置里换模型…') }] : [])];
     }
     const cat = await loadCatalog(a.adapter);
     const list = (cat.models || []).slice();
@@ -2159,12 +2200,12 @@
       { label: def, checked: !a.model, run: () => setAgentModel(a, '') },
       ...list.map((m) => ({ label: m.label, desc: m.note && m.note !== m.label ? m.note : '', checked: a.model === m.id, run: () => setAgentModel(a, m.id) })),
       ...(cat.error ? [{ label: cat.error, header: true }] : []),
-      '-',
-      more,
+      ...(more ? ['-', more] : []),
     ];
   }
 
-  // 换模型：只改模型这一项。原来的思考强度新模型不支持的话，一起改回默认（和成员设置里的规则一样）
+  // 换模型：只改模型这一项。原来的思考强度新模型不支持的话，一起改回默认（和成员设置里的规则一样）。
+  // 主界面上改的是还没建的新会话里的成员，记在 S.home 上，建会话时一起带过去（见 sendFromHome）
   async function setAgentModel(a, model) {
     if ((a.model || '') === model) return;
     const patch = { model };
@@ -2174,17 +2215,24 @@
       const levels = a.adapter === 'opencode' ? (model && m ? m.efforts || [] : []) : m && m.efforts && m.efforts.length ? m.efforts : cat.efforts || [];
       if (!levels.includes(a.effort)) patch.effort = '';
     }
+    const name = model ? modelName(a.adapter, model) : tr('默认模型');
+    const reset = patch.effort === '' ? tr('（新模型不支持原来的思考强度，改回了默认）') : '';
+    if (!S.room) {
+      const mate = S.home && S.home.agents.find((x) => x.id === a.id);
+      if (!mate) return;
+      Object.assign(mate, patch);
+      saveHomePicks();
+      return toast(tr('新会话里 {name} 用 {model}', { name: a.name, model: name }) + reset);
+    }
     await api('PATCH', `/api/rooms/${S.roomId}/agents/${a.id}`, patch);
-    toast(
-      tr('{name} 下一轮开始用 {model}', { name: a.name, model: model ? modelName(a.adapter, model) : tr('默认模型') }) +
-        (patch.effort === '' ? tr('（新模型不支持原来的思考强度，改回了默认）') : '')
-    );
+    toast(tr('{name} 下一轮开始用 {model}', { name: a.name, model: name }) + reset);
   }
 
   async function setDefaultAgent(id) {
     // 主界面：记在 S.home 上，发第一条消息建好会话时再设（见 sendFromHome）
     if (!S.room) {
       if (S.home) S.home.defaultAgent = id;
+      saveHomePicks();
       return updateTo();
     }
     if (S.room.settings.defaultAgent === id) return;
@@ -2683,8 +2731,8 @@
     }
   }
 
-  // 主界面上发第一条消息：这时才建会话（不属于哪个项目，不用选文件夹），成员照搬 S.home.from 那个会话（见 goHome）。
-  // 主界面上换过「发给谁」的，在新会话里对上同名的成员；记着的附件添加到新会话里，再把消息发出去，然后打开这个会话。
+  // 主界面上发第一条消息：这时才建会话（不属于哪个项目，不用选文件夹），成员是装好的每个 AI，或者照搬 S.home.from 那个会话（见 goHome）。
+  // 主界面上换过的模型和「发给谁」按成员名字带过去；记着的附件添加到新会话里，再把消息发出去，然后打开这个会话。
   // 会话建好了、后面出了错（比如附件太大）：照样打开它，话放回它的输入框，免得再发一次又多建一个
   let homeSending = false;
   async function sendFromHome(text, staged) {
@@ -2700,10 +2748,11 @@
     closePop();
     let room = null;
     try {
-      room = await api('POST', '/api/chats', { from: home.from || '' });
+      const models = {};
+      for (const a of home.agents) models[a.name] = { model: a.model || '', effort: a.effort || '' };
       const pick = home.agents.find((a) => a.id === home.defaultAgent);
-      const mate = pick && room.agents.find((a) => a.name === pick.name);
-      if (mate && mate.id !== room.settings.defaultAgent) await api('PATCH', `/api/rooms/${room.id}`, { settings: { defaultAgent: mate.id } });
+      const team = home.from ? { from: home.from } : { template: 'all' };
+      room = await api('POST', '/api/chats', { ...team, models, to: pick ? pick.name : '' });
       const paths = staged.flatMap((a) => a.paths || []);
       const items = paths.length ? (await api('POST', `/api/rooms/${room.id}/attachments`, { paths })).items : [];
       for (const a of staged) if (a.uploads) items.push(...(await uploadEntries(room.id, a.uploads)));
@@ -2991,7 +3040,6 @@
       S.skills = [];
       await loadSkills(id); // 先读技能列表，草稿里的 /技能 才能显示成标签
       if (S.roomId !== id) return;
-      local.set('agentchat.room', id);
       $('#app').classList.remove('rail-open');
       renderProjects();
       renderMembers();
@@ -4637,15 +4685,16 @@
       toast(e.message, true);
     }
     renderProjects();
-    // 打开就是主界面（一个还没建的新会话），成员照搬最近打开的那个会话
-    goHome(local.get('agentchat.room'));
+    // 打开就是主界面（一个还没建的新会话）
+    goHome();
     try {
       S.env = await api('GET', '/api/env');
     } catch {}
     renderEnv();
-    // 还在主界面上：读到了 AI 工具（没有会话可以照搬时，成员按检测到的工具配）。打了一半的字留着
+    // 还在主界面上：读到了 AI 工具，成员按检测到的工具配。打了一半的字留着
     if (!S.room && !S.projectId) {
       if (S.home && !S.home.from) S.home = homeTeam(null);
+      loadHomeCatalogs();
       const g = $('#homeGreet');
       if (g) g.textContent = greeting(); // 还是同一句，名字可能这时才读到
       updateTo();
