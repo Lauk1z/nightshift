@@ -172,6 +172,8 @@ class Store {
             name: list.length === 1 ? first.name : path.basename(String(first.workspace || '')) || first.name,
             workspace: first.workspace,
             createdAt: first.createdAt,
+            // 记成里面的会话最近动过的时候，不用现在的时间，ensureOrder 才排得出原来的先后
+            updatedAt: Math.max(...list.map((r) => r.updatedAt || 0)),
           },
           { top: false } // 先不编号，等 ensureOrder 按最近动过的先后统一排
         );
@@ -212,9 +214,9 @@ class Store {
     return [...this.rooms.values()].filter((r) => r.projectId === projectId).sort(byPinThenOrder);
   }
 
-  createProject({ name, workspace, createdAt, standalone }, { top = true } = {}) {
+  createProject({ name, workspace, createdAt, updatedAt, standalone }, { top = true } = {}) {
     const now = Date.now();
-    const p = { id: newId('p'), name: String(name || '') || path.basename(String(workspace || '')), workspace, createdAt: createdAt || now, updatedAt: now };
+    const p = { id: newId('p'), name: String(name || '') || path.basename(String(workspace || '')), workspace, createdAt: createdAt || now, updatedAt: updatedAt || now };
     if (standalone) p.standalone = true;
     if (top) p.order = this.projects.size ? Math.min(...[...this.projects.values()].map((x) => x.order ?? 0)) - 1 : 0;
     this.projects.set(p.id, p);
