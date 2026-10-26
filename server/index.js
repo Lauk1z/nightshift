@@ -19,7 +19,7 @@ const adapters = require('./adapters');
 const models = require('./models');
 const skills = require('./skills');
 const files = require('./files');
-const { RESERVED } = require('./prompt');
+const { RESERVED, APPROVAL, approvalMode } = require('./prompt');
 const { IS_WIN } = require('./proc');
 
 const ROOT = path.join(__dirname, '..');
@@ -97,6 +97,7 @@ function publicRoom(room) {
     pinned: !!room.pinned,
     workspace: room.workspace,
     settings: room.settings,
+    reviewer: room.reviewer ? publicAgent(room.reviewer) : null, // 专门接入的审查模型（见 orchestrator.js 的 reviewerOf）
     createdAt: room.createdAt,
     updatedAt: room.updatedAt,
     agents: room.agents.map(publicAgent),
@@ -117,8 +118,9 @@ function roomSummary(room) {
     updatedAt: room.updatedAt,
     // 新建会话的弹窗里「照搬某个会话的成员」要显示每个成员的职责和工具
     agents: room.agents.map((a) => ({ id: a.id, name: a.name, color: a.color, role: a.role || '', adapter: a.adapter })),
+    approval: approvalMode(room), // 自动执行的会话，成员 @用户 时先不弹「需要你」的通知，等审查结果
     busy: orch.isBusy(room.id),
-    last: last ? { name: last.from === 'user' ? tr('你') : last.name, text: String(last.text || '').slice(0, 80) } : null,
+    last: last ? { name: last.from === 'user' ? tr('你') : last.kind === 'review' ? tr('自动审查') : last.name, text: String(last.text || '').slice(0, 80) } : null,
   };
 }
 
@@ -398,7 +400,7 @@ route('POST', '/api/models/remote', async (req, { body }) => {
   let key = String(body.apiKey || '');
   if (body.roomId && body.agentId) {
     const room = store.getRoom(body.roomId);
-    const agent = room && room.agents.find((a) => a.id === body.agentId);
+    const agent = room && [...room.agents, room.reviewer].find((a) => a && a.id === body.agentId); // 也可能是专门的审查模型
     const saved = agent && agent.api && agent.api.apiKey;
     if (saved && (!key || key === maskKey(saved))) key = saved;
   }
@@ -483,13 +485,14 @@ async function createChat(body) {
   const from = body.from && store.getRoom(body.from);
   let agents;
   let settings = {};
+  let reviewer = null;
   if (body.template) agents = templateAgents(body.template, body.template === 'blank' ? {} : await adapters.detectAll());
-  else if (from && from.agents.length) ({ agents, settings } = copyAgents(from));
+  else if (from && from.agents.length) ({ agents, settings, reviewer } = copyAgents(from));
   else agents = templateAgents('duo', await adapters.detectAll());
   const workspace = path.join(DATA, 'chats', newId('c'));
   fs.mkdirSync(workspace, { recursive: true });
   const project = store.createProject({ name: tr('新会话'), workspace, standalone: true });
-  const room = store.createRoom({ projectId: project.id, name: tr('新会话'), autoName: true, agents, settings });
+  const room = store.createRoom({ projectId: project.id, name: tr('新会话'), autoName: true, agents, settings, reviewer });
   broadcastRooms();
   return room;
 }
@@ -520,31 +523,34 @@ async function removeChatFolder(dir) {
   }
 }
 
-// 成员配置照搬一份（新的 id，不带会话记忆），默认接收人跟着对上
+// 成员配置照搬一份（新的 id，不带会话记忆），默认接收人和审查模型跟着对上；专门接入的审查模型也照搬
 function copyAgents(from) {
   const ids = {};
+  const clone = (a) => ({ ...JSON.parse(JSON.stringify(a)), id: newId('a') });
   const agents = from.agents.map((a) => {
-    const copy = JSON.parse(JSON.stringify(a));
-    copy.id = newId('a');
+    const copy = clone(a);
     ids[a.id] = copy.id;
     return copy;
   });
-  const settings = { ...from.settings, defaultAgent: ids[from.settings.defaultAgent] || '' };
-  return { agents, settings };
+  const rv = from.settings.reviewer;
+  const reviewer = from.reviewer ? clone(from.reviewer) : null;
+  const settings = { ...from.settings, defaultAgent: ids[from.settings.defaultAgent] || '', reviewer: rv === 'own' ? (reviewer ? 'own' : '') : ids[rv] || '' };
+  return { agents, settings, reviewer };
 }
 
 // 在项目里新建会话：成员默认照搬当前会话（没有就用项目里最近的一个会话），也可以指定团队模板
 async function createConversation(project, body) {
   let agents;
   let settings = {};
+  let reviewer = null;
   if (body.template) agents = templateAgents(body.template, await adapters.detectAll());
   else {
     const from = (body.from && store.getRoom(body.from)) || store.roomsOf(project.id)[0];
-    if (from && from.projectId === project.id) ({ agents, settings } = copyAgents(from));
+    if (from && from.projectId === project.id) ({ agents, settings, reviewer } = copyAgents(from));
     else agents = templateAgents('duo', await adapters.detectAll());
   }
   const given = String(body.name || '').trim().slice(0, 40);
-  const room = store.createRoom({ projectId: project.id, name: given || tr('新会话'), autoName: !given, agents, settings });
+  const room = store.createRoom({ projectId: project.id, name: given || tr('新会话'), autoName: !given, agents, settings, reviewer });
   broadcastRooms();
   return room;
 }
@@ -615,6 +621,15 @@ route('PATCH', '/api/rooms/:id', async (req, { params, body }) => {
       if (s.acceptance && !room.settings.acceptance) orch.saveBase(room.id);
       room.settings.acceptance = !!s.acceptance;
     }
+    // 成员 @用户 时怎么办，和自动执行用的审查模型（会话里的成员，或者 'own' 专门接入的那个）
+    if (s.approval !== undefined) {
+      if (!APPROVAL.includes(s.approval)) throw bad(tr('「成员需要你确认时」的设置不正确'));
+      room.settings.approval = s.approval;
+    }
+    if (s.reviewer !== undefined) {
+      const v = String(s.reviewer || '');
+      room.settings.reviewer = v === 'own' ? (room.reviewer ? 'own' : '') : room.agents.some((a) => a.id === v) ? v : '';
+    }
   }
   store.saveRoom(room);
   bus.send('room', publicRoom(room));
@@ -678,6 +693,7 @@ route('DELETE', '/api/rooms/:id/agents/:aid', async (req, { params }) => {
   delete room.sideSessions[params.aid];
   delete room.sideSeen[params.aid];
   if (room.settings.defaultAgent === params.aid) room.settings.defaultAgent = '';
+  if (room.settings.reviewer === params.aid) room.settings.reviewer = '';
   store.saveRoom(room);
   bus.send('room', publicRoom(room));
   broadcastRooms();
@@ -691,6 +707,30 @@ route('POST', '/api/rooms/:id/agents/:aid/reset', async (req, { params }) => {
   store.saveRoom(room);
   bus.send('room', publicRoom(room));
   return { ok: true };
+});
+
+// 专门接入的审查模型（「成员要你确认时」选了自动执行）：不是会话成员，不参与接力，只读。存好就选上它
+function cleanReviewer(input, existing) {
+  const a = cleanAgent({ ...input, name: '审查' }, { agents: [] }, existing);
+  return { ...a, name: '审查', role: '', instructions: '', permission: 'readonly', enabled: true };
+}
+
+route('PUT', '/api/rooms/:id/reviewer', async (req, { params, body }) => {
+  const room = needRoom(params.id);
+  room.reviewer = cleanReviewer(body || {}, room.reviewer);
+  room.settings.reviewer = 'own';
+  store.saveRoom(room);
+  bus.send('room', publicRoom(room));
+  return publicRoom(room);
+});
+
+route('DELETE', '/api/rooms/:id/reviewer', async (req, { params }) => {
+  const room = needRoom(params.id);
+  room.reviewer = null;
+  if (room.settings.reviewer === 'own') room.settings.reviewer = '';
+  store.saveRoom(room);
+  bus.send('room', publicRoom(room));
+  return publicRoom(room);
 });
 
 route('POST', '/api/rooms/:id/agents/:aid/run', async (req, { params }) => {

@@ -187,6 +187,8 @@
       '<path d="M1.6 7.2c0-.66.54-1.2 1.2-1.2h2.4l1.3 1.3h3.7c.66 0 1.2.54 1.2 1.2v3.9c0 .66-.54 1.2-1.2 1.2H2.8c-.66 0-1.2-.54-1.2-1.2z"/><path d="M4.6 6V4.2c0-.66.54-1.2 1.2-1.2h2.4l1.3 1.3h3.7c.66 0 1.2.54 1.2 1.2v3.9c0 .66-.54 1.2-1.2 1.2h-1.8"/>'
     ),
     gear: I('<circle cx="8" cy="8" r="2.3"/><path d="M8 1.8v1.7M8 12.5v1.7M14.2 8h-1.7M3.5 8H1.8M12.4 3.6l-1.2 1.2M4.8 11.2l-1.2 1.2M12.4 12.4l-1.2-1.2M4.8 4.8L3.6 3.6"/>'),
+    // 盾牌（自动审查）
+    shield: I('<path d="M8 1.8l5 1.9v3.9c0 3.2-2.1 5.6-5 6.6-2.9-1-5-3.4-5-6.6V3.7z"/><path d="M5.8 8.1l1.6 1.6 2.9-3.1"/>'),
     // 插头（左下角本机 AI 工具的状态）：两个插脚朝右上，线往左下
     plug: I('<g transform="rotate(45 8 8)"><path d="M6.2 1.6v2.9M9.8 1.6v2.9"/><path d="M4.3 4.5h7.4v2.6a3.7 3.7 0 01-7.4 0z"/><path d="M8 10.8v4.4"/></g>'),
     menu: I('<path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11"/>'),
@@ -374,6 +376,8 @@
     if (a.adapter === 'openai') return a.model || 'API';
     return (ADAPTERS[a.adapter] ? ADAPTERS[a.adapter].label : a.adapter) + (a.model ? ` ${modelName(a.adapter, a.model)}` : '');
   }
+  // 自动审查用的审查模型：会话成员写成员名，专门接入的写「专门的审查模型」，后面是接入方式和模型
+  const reviewerLabel = (by) => `${by.own ? tr('专门的审查模型') : by.name} · ${adapterLabel(by)}`;
 
   async function loadCatalog(adapter, force) {
     if (!force && S.catalogs[adapter]) return S.catalogs[adapter];
@@ -1071,9 +1075,11 @@
       chain.push({ who: 'user', state: 'done' });
       for (const m of msgs.slice(start + 1)) {
         if (m.kind === 'agent') chain.push({ who: m.from, name: m.name, state: m.status === 'done' ? 'done' : m.status });
+        else if (m.kind === 'review') chain.push({ who: 'review', state: 'done' }); // 自动审查也是接力的一站
       }
     }
     const st = S.state || {};
+    if (st.review) chain.push({ who: 'review', state: 'running' });
     if (st.running) chain.push({ who: st.running.agentId, state: 'running' });
     for (const q of st.queue || []) chain.push({ who: q.agentId, state: st.paused ? 'queued paused' : 'queued' });
     return chain;
@@ -1081,6 +1087,7 @@
 
   function hopColor(h) {
     if (h.who === 'user') return 'var(--ink)';
+    if (h.who === 'review') return 'var(--graphite)';
     const a = agentById(h.who);
     return a ? a.color : hashColor(h.name || h.who);
   }
@@ -1101,8 +1108,8 @@
     const shown = chain.slice(hidden);
     const hops = shown.map((h, i) => {
       const prev = i > 0 ? shown[i - 1] : hidden ? chain[hidden - 1] : null;
-      const a = h.who === 'user' ? null : agentById(h.who);
-      const name = h.who === 'user' ? tr('你') : a ? a.name : h.name || tr('已删除的成员');
+      const a = h.who === 'user' || h.who === 'review' ? null : agentById(h.who);
+      const name = h.who === 'user' ? tr('你') : h.who === 'review' ? tr('自动审查') : a ? a.name : h.name || tr('已删除的成员');
       const status = h.state === 'running' && S.progress ? `<span class="hop-status">${esc(S.progress.status || '')}</span>` : '';
       const label = { done: tr('已完成'), running: tr('正在工作'), queued: tr('排队中'), 'queued paused': tr('暂停中'), error: tr('出错'), stopped: tr('已中止') }[h.state] || '';
       return `<li class="hop ${h.state} ${h.who === 'user' ? 'me' : ''}" style="--c:${hopColor(h)};--c-prev:${prev ? hopColor(prev) : 'var(--rule)'}" title="${esc(tr('{name}：{text}', { name, text: label }))}">
@@ -1643,6 +1650,7 @@
     }
     const time = `<time datetime="${new Date(m.ts).toISOString()}">${fmtTime(m.ts)}</time>`;
     const copyBtn = m.text ? `<button type="button" class="act" data-copy-msg="${m.id}" title="${tr('复制')}" aria-label="${tr('复制')}">${ICONS.copy}</button>` : '';
+    if (m.kind === 'review') return reviewNode(m, time, copyBtn);
     // 你发的消息：靠右的气泡，和 Claude 桌面版一样
     if (m.from === 'user') {
       return el(`<article class="msg user" data-id="${m.id}">
@@ -1676,6 +1684,21 @@
     const retry = a && (m.status === 'error' || m.status === 'stopped') ? `<button type="button" class="btn small" data-poke="${a.id}">${esc(tr('让 {name} 再试一次', { name: a.name }))}</button>` : '';
     body.append(el(`<div class="foot"><span class="acts">${copyBtn}</span>${meta.join('')}${retry}</div>`));
     return node;
+  }
+
+  // 自动审查（「成员需要你确认时」选了自动执行）：审查模型代你答复了（正文就是答复，下面写理由），
+  // 或者把这一步转交给你（正文是原因）
+  function reviewNode(m, time, copyBtn) {
+    const rv = m.review || {};
+    const ok = rv.decision === 'approve';
+    const meta = [time];
+    if (m.meta && m.meta.ms) meta.push(`<span>${tr('用时 {time}', { time: fmtDur(m.meta.ms) })}</span>`);
+    return el(`<article class="msg agent review ${ok ? 'ok' : 'ask'}" data-id="${m.id}">
+      <header class="who"><span class="avatar">${ICONS.shield}</span><span class="who-name">${tr('自动审查')}</span>${
+        rv.by ? `<span class="who-role">${esc(reviewerLabel(rv.by))}</span>` : ''
+      }<span class="review-tag">${ok ? tr('已代你答复') : tr('交给你确认')}</span></header>
+      <div class="body"><div class="md">${md(m.text || '')}</div>${ok && rv.reason ? `<p class="review-why">${esc(tr('理由：{reason}', { reason: rv.reason }))}</p>` : ''}
+        <div class="foot"><span class="acts">${copyBtn}</span>${meta.join('')}</div></div></article>`);
   }
 
   function emptyTranscript() {
@@ -1997,6 +2020,9 @@
     ids = [...new Set(ids)].filter((x) => x !== 'user' && x !== 'all');
     if (ids.length) return { ids, how: 'mention' };
     const st = S.state || {};
+    // 有成员在等你回复：没 @ 人的话交给它（和服务端一样，见 orchestrator.js 的 postUser）
+    const waiting = st.review ? st.review.agentId : st.paused && st.asked ? st.asked.agentId : '';
+    if (waiting && list.some((a) => a.id === waiting)) return { ids: [waiting], how: 'reply' };
     if (st.running) return { ids: [st.running.agentId], how: 'running' };
     if (st.queue && st.queue.length) return { ids: [], how: 'queue' };
     const def = list.find((a) => a.id === S.room.settings.defaultAgent) || list[0];
@@ -2037,9 +2063,12 @@
         ? tr('排队的成员接着做时会看到')
         : how === 'running'
           ? tr('发给 {names}，做完手上这一步就会看到', { names })
-          : tr('发给 {names}', { names }) + (ids.length > 1 ? tr('，轮流做') : '');
+          : how === 'reply'
+            ? tr('回复 {names}', { names })
+            : tr('发给 {names}', { names }) + (ids.length > 1 ? tr('，轮流做') : '');
     to.innerHTML = `<span class="to-text">${text}</span>`;
-    to.title = how === 'mention' && ids.length > 1 ? tr('按 @ 的顺序一个接一个做') : '';
+    to.title =
+      how === 'mention' && ids.length > 1 ? tr('按 @ 的顺序一个接一个做') : how === 'reply' ? tr('它在等你回复：你的消息先交给它，排在后面的成员再接着做') : '';
     updateSendBtn();
   }
 
@@ -2121,7 +2150,7 @@
     const btn = $('#sendBtn');
     if (!btn) return;
     const st = S.state || {};
-    const busy = (!!st.running || (st.queue || []).length > 0) && !st.paused;
+    const busy = (!!st.running || (st.queue || []).length > 0 || !!st.review) && !st.paused;
     const has = !!getText().trim();
     const mode = !has && busy ? 'stop' : 'send';
     const sig = mode + (has ? '1' : '0');
@@ -2153,16 +2182,28 @@
     const st = S.state || {};
     const banner = $('#banner');
     if (banner) {
-      if (st.paused) {
+      if (st.review) {
+        // 自动执行：审查模型正在看成员要你确认的事，看完再决定是代你答复还是交给你
+        banner.hidden = false;
+        banner.classList.remove('error');
+        banner.innerHTML = `<span class="grow">${tr('{name} 有事要你确认，正在交给审查模型（{by}）审查……', { name: `<b>${esc(st.review.name)}</b>`, by: esc(reviewerLabel(st.review.by)) })}</span>
+          <button class="btn small" data-stop>${tr('停止')}</button>`;
+      } else if (st.paused) {
         const names = [...new Set((st.queue || []).map((q) => agentById(q.agentId)).filter(Boolean).map((a) => a.name))].join(tr('、'));
         banner.hidden = false;
         const f = st.pauseReason === 'error' && st.failed;
+        const ask = st.pauseReason === 'ask' && st.asked;
         banner.classList.toggle('error', !!f);
         banner.innerHTML = f
           ? `<span class="grow">${tr('{name} 运行出错，接力已暂停，排在后面的 {names} 先不做。处理好后让它再试一次，就会从这一步接着往下做。', { name: `<b>${esc(f.name)}</b>`, names: esc(names) })}</span>
             <button class="btn small primary" data-poke="${esc(f.agentId)}">${esc(tr('让 {name} 再试一次', { name: f.name }))}</button>
             <button class="btn small" data-continue>${tr('跳过，继续接力')}</button><button class="btn small" data-stop>${tr('停止')}</button>`
-          : `<span class="grow">${tr('AI 之间已经自动接力 {n} 轮，先停下来等你看一眼。接下来轮到 {names}。', { n: st.autoTurns, names: esc(names) })}</span>
+          : ask
+            ? `<span class="grow">${tr('{name} 在等你回复，接力先停在这里，排在后面的 {names} 等你批准才做。', { name: `<b>${esc(ask.name)}</b>`, names: esc(names) })}${
+                ask.reason ? `<small class="banner-why">${esc(tr('自动审查：{reason}', { reason: ask.reason }))}</small>` : ''
+              }</span>
+            <button class="btn small primary" data-continue>${tr('批准，继续接力')}</button><button class="btn small" data-stop>${tr('停止')}</button>`
+            : `<span class="grow">${tr('AI 之间已经自动接力 {n} 轮，先停下来等你看一眼。接下来轮到 {names}。', { n: st.autoTurns, names: esc(names) })}</span>
             <button class="btn small primary" data-continue>${tr('继续接力')}</button><button class="btn small" data-stop>${tr('停止')}</button>`;
       } else {
         banner.hidden = true;
@@ -3103,7 +3144,10 @@
     });
   }
 
-  function memberModal(agent) {
+  // opts.reviewer：编辑专门接入的审查模型（自动执行用）。只要接入方式和模型，不参与接力，名字、职责、权限这些都不用；
+  // 存好以后调 opts.onSave(会话)
+  function memberModal(agent, opts = {}) {
+    const forReviewer = !!opts.reviewer;
     const isNew = !agent;
     const firstInstalled = CLI_TOOLS.find((id) => envOf(id).installed) || 'openai';
     const a = agent
@@ -3143,7 +3187,7 @@
         <label for="mm-key" style="margin-top:8px">API Key</label>
         <input class="input mono" id="mm-key" type="password" value="${esc(a.api.apiKey || '')}" placeholder="${a.api.hasKey ? '' : tr('sk-…（本机 Ollama 可以不填）')}" autocomplete="off">
         <span class="hint">${tr('Key 只保存在这台电脑的 data 文件夹里，不会发给任何人（除了你填的接口地址）。')}</span>
-        <label class="check"><input type="checkbox" id="mm-tools" ${a.api.tools !== false ? 'checked' : ''}>${tr('让它能读写项目文件（需要模型支持工具调用）')}</label>
+        <label class="check" data-member-only><input type="checkbox" id="mm-tools" ${a.api.tools !== false ? 'checked' : ''}>${tr('让它能读写项目文件（需要模型支持工具调用）')}</label>
       </div>
       <div class="field" id="mm-dsh-wrap">
         <label for="mm-dsh-key">DeepSeek API Key</label>
@@ -3159,15 +3203,15 @@
       <div class="field"><span class="label" id="mm-effort-label">${tr('思考强度')}</span>
         <div class="seg" id="mm-effort" role="radiogroup" aria-labelledby="mm-effort-label"></div>
         <span class="hint" id="mm-effort-hint"></span></div>
-      <div class="row">
+      <div class="row" data-member-only>
         <div class="field grow"><label for="mm-name">${tr('名字')}</label><input class="input" id="mm-name" maxlength="16" value="${esc(a.name)}" placeholder="${tr('例如')} GPT">
           <span class="hint">${tr('群聊里用 @名字 呼叫它')}</span></div>
         <div class="field grow"><label for="mm-role">${tr('角色')}</label><input class="input" id="mm-role" maxlength="24" value="${esc(a.role || '')}" placeholder="${tr('例如 开发、产品设计')}"></div>
       </div>
-      <div class="field"><label for="mm-inst">${tr('职责说明')}</label>
+      <div class="field" data-member-only><label for="mm-inst">${tr('职责说明')}</label>
         <textarea class="input" id="mm-inst" placeholder="${tr('告诉它负责什么、做完交给谁。例如：负责写代码，每完成一个功能就交给负责审查的成员检查。')}">${esc(a.instructions || '')}</textarea></div>
-      <div class="field"><span class="label">${tr('权限')}</span><div class="choices" id="mm-perms"></div></div>
-      <div class="field"><span class="label">${tr('颜色')}</span><div class="swatches">${PALETTE.map(
+      <div class="field" data-member-only><span class="label">${tr('权限')}</span><div class="choices" id="mm-perms"></div></div>
+      <div class="field" data-member-only><span class="label">${tr('颜色')}</span><div class="swatches">${PALETTE.map(
         (c) => `<button type="button" class="swatch" style="--c:${c}" data-color="${c}" aria-label="${tr('颜色')} ${c}" aria-pressed="${c.toLowerCase() === String(a.color).toLowerCase()}"></button>`
       ).join('')}</div></div>
       <details class="more"><summary>${tr('更多设置')}</summary>
@@ -3177,14 +3221,16 @@
         <div class="field" id="mm-body-wrap"><label for="mm-extra-body">${tr('额外请求参数（JSON）')}</label>
           <textarea class="input mono" id="mm-extra-body" placeholder='{"thinking": {"type": "enabled"}}'>${esc(a.api.extraBody ? JSON.stringify(a.api.extraBody, null, 2) : '')}</textarea>
           <span class="hint">${tr('会合并进每次请求，用来打开某些服务特有的功能，比如 DeepSeek、智谱的思考模式。不熟悉可以不填。')}</span></div>
-        <label class="check"><input type="checkbox" id="mm-enabled" ${a.enabled !== false ? 'checked' : ''}>${tr('参与接力（取消勾选就暂时停用，不删除）')}</label>
+        <label class="check" data-member-only><input type="checkbox" id="mm-enabled" ${a.enabled !== false ? 'checked' : ''}>${tr('参与接力（取消勾选就暂时停用，不删除）')}</label>
       </details>
     </form>`);
     const m = openModal({
-      title: isNew ? tr('添加成员') : tr('编辑成员：{name}', { name: a.name }),
+      title: forReviewer ? tr('专门的审查模型') : isNew ? tr('添加成员') : tr('编辑成员：{name}', { name: a.name }),
+      desc: forReviewer ? tr('只用来审查成员要你确认的事，不参与接力。它只读，不会改动项目里的文件。') : '',
       body,
       wide: true,
     });
+    if (forReviewer) $$('[data-member-only]', body).forEach((x) => (x.hidden = true));
     let color = a.color;
     let modelVal = a.model || '';
     let effortVal = a.effort || '';
@@ -3433,6 +3479,14 @@
     };
     const save = async () => {
       const data = collect();
+      if (forReviewer) {
+        const room = await api('PUT', `/api/rooms/${S.roomId}/reviewer`, data);
+        if (S.room && S.room.id === room.id) S.room = room;
+        m.close();
+        toast(tr('已保存'));
+        if (opts.onSave) opts.onSave(room);
+        return;
+      }
       if (data.permission === 'full' && (isNew || agent.permission !== 'full')) {
         const ok = await confirmBox(tr('开启完全权限？'), tr('{name}将可以在你的电脑上运行任何命令，并且不再询问。只在你信任它要做的事时开启。', { name: data.name || tr('这个成员') }), tr('开启'), true);
         if (!ok) return;
@@ -3447,7 +3501,19 @@
       save().catch((err) => toast(err.message, true));
     });
     const buttons = [];
-    if (!isNew) {
+    if (forReviewer && !isNew) {
+      buttons.push({
+        label: tr('删除'),
+        kind: 'danger',
+        onClick: async () => {
+          const room = await api('DELETE', `/api/rooms/${S.roomId}/reviewer`);
+          if (S.room && S.room.id === room.id) S.room = room;
+          m.close();
+          toast(tr('已删除专门的审查模型'));
+          if (opts.onSave) opts.onSave(room);
+        },
+      });
+    } else if (!isNew) {
       buttons.push({
         label: tr('删除成员'),
         kind: 'danger',
@@ -3476,17 +3542,25 @@
         });
       }
     }
-    buttons.push('spacer', { label: tr('取消') }, { label: isNew ? tr('添加成员') : tr('保存'), kind: 'primary', onClick: save });
+    buttons.push('spacer', { label: tr('取消') }, { label: isNew && !forReviewer ? tr('添加成员') : tr('保存'), kind: 'primary', onClick: save });
     footButtons(m, buttons);
   }
 
-  // 会话设置：名字、没 @ 人时交给谁、自动接力上限、清空或删除这个会话（文件夹在项目设置里）
+  // 成员 @用户（要你拍板、提供信息或验收）时怎么办，见 orchestrator.js 的 gate
+  const APPROVAL_MODES = () => [
+    ['manual', tr('人工审查'), tr('成员 @用户 提问或请你确认时，接力停在这里，等你回复或批准后才交给下一位成员。')],
+    ['auto', tr('自动执行'), tr('先交给审查模型判断：风险低的由它代你答复，接力接着做；有高风险操作、或者要你亲自动手时，才停下来等你批准。')],
+    ['full', tr('全权代理'), tr('不用你批准，成员自己拿主意，接力不会停下来等你。')],
+  ];
+
+  // 会话设置：名字、没 @ 人时交给谁、自动接力上限、成员需要你确认时怎么办、清空或删除这个会话（文件夹在项目设置里）
   function settingsModal() {
     const r = S.room;
     if (!r) return;
     const opts = agents()
       .map((a) => `<option value="${a.id}" ${r.settings.defaultAgent === a.id ? 'selected' : ''}>${esc(a.name)}</option>`)
       .join('');
+    const mode = r.settings.approval || 'manual';
     const body = el(`<form>
       <div class="field"><label for="ps-name">${tr('会话名称')}</label><input class="input" id="ps-name" maxlength="40" value="${esc(r.name)}"></div>
       <div class="row">
@@ -3499,6 +3573,15 @@
       </div>
       <div class="field"><label class="check"><input type="checkbox" id="ps-accept" ${r.settings.acceptance ? 'checked' : ''}>${tr('交付验收清单')}</label>
         <span class="hint">${tr('成员说做完了、把成果交给你验收时，Nightshift 按清单核对源代码、测试、EXE、启动测试、日志和原有文件，结果做成一张卡片，不只听成员怎么说。只是交接给队友、向你提问时不核对。')}</span></div>
+      <div class="field"><span class="label" id="ps-approval-label">${tr('成员需要你确认时')}</span>
+        <div class="choices" role="radiogroup" aria-labelledby="ps-approval-label">${APPROVAL_MODES()
+          .map(([v, title, desc]) => `<label class="choice"><input type="radio" name="ps-approval" value="${v}" ${mode === v ? 'checked' : ''}><b>${title}</b><span>${desc}</span></label>`)
+          .join('')}</div>
+        <div class="reviewer-pick" id="ps-rv" ${mode === 'auto' ? '' : 'hidden'}>
+          <label for="ps-reviewer">${tr('审查模型')}</label>
+          <div class="row"><select class="input grow" id="ps-reviewer"></select><button type="button" class="btn" data-own-reviewer></button></div>
+          <span class="hint">${tr('审查模型只读：可以看项目文件帮助判断，不会改动任何东西。可以用会话里已有的成员，也可以接入一个专门用来审查的模型。')}</span>
+        </div></div>
       <div class="field"><span class="label">${r.standalone ? tr('文件夹') : tr('项目文件夹')}</span><code class="hint" style="font-family:var(--mono);overflow-wrap:anywhere">${esc(r.workspace)}</code>
         <span class="hint">${
           r.standalone
@@ -3529,6 +3612,32 @@
         m.close();
         projectSettingsModal(r.projectId);
       });
+    // 审查模型：专门接入的那个，或者会话里的成员。接入或修改了专门的审查模型以后，列表跟着换、选上它
+    const rvSel = $('#ps-reviewer', body);
+    const fillReviewer = (pick) => {
+      const room = S.room && S.room.id === r.id ? S.room : r;
+      const own = room.reviewer;
+      rvSel.innerHTML = `<option value="">${tr('选择审查模型…')}</option>${
+        own ? `<optgroup label="${esc(tr('专门的审查模型'))}"><option value="own">${esc(adapterLabel(own))}</option></optgroup>` : ''
+      }${
+        agents().length
+          ? `<optgroup label="${esc(tr('会话成员'))}">${agents()
+              .map((a) => `<option value="${a.id}">${esc(tr('{name}（{tool}）', { name: a.name, tool: adapterLabel(a) }))}</option>`)
+              .join('')}</optgroup>`
+          : ''
+      }`;
+      rvSel.value = pick;
+      if (rvSel.selectedIndex < 0) rvSel.value = '';
+      $('[data-own-reviewer]', body).textContent = own ? tr('修改专门的审查模型…') : tr('接入专门的审查模型…');
+    };
+    fillReviewer(r.settings.reviewer || '');
+    body.addEventListener('change', (e) => {
+      if (e.target.name === 'ps-approval') $('#ps-rv', body).hidden = e.target.value !== 'auto';
+    });
+    $('[data-own-reviewer]', body).addEventListener('click', () => {
+      const room = S.room && S.room.id === r.id ? S.room : r;
+      memberModal(room.reviewer, { reviewer: true, onSave: (next) => fillReviewer(next && next.reviewer ? 'own' : rvSel.value === 'own' ? '' : rvSel.value) });
+    });
     $('[data-clear]', body).addEventListener('click', async () => {
       const ok = await confirmBox(tr('清空聊天记录'), tr('所有消息都会删除，各成员也会忘掉之前的对话。项目文件不受影响。'), tr('清空'), true);
       if (!ok) return;
@@ -3548,9 +3657,20 @@
       }
     });
     const save = async () => {
+      const approval = (body.querySelector('input[name=ps-approval]:checked') || {}).value || 'manual';
+      if (approval === 'auto' && !rvSel.value) {
+        rvSel.focus();
+        throw new Error(tr('选了「自动执行」，还要选一个审查模型'));
+      }
       await api('PATCH', `/api/rooms/${r.id}`, {
         name: $('#ps-name', body).value,
-        settings: { defaultAgent: $('#ps-def', body).value, maxAutoTurns: Number($('#ps-max', body).value), acceptance: $('#ps-accept', body).checked },
+        settings: {
+          defaultAgent: $('#ps-def', body).value,
+          maxAutoTurns: Number($('#ps-max', body).value),
+          acceptance: $('#ps-accept', body).checked,
+          approval,
+          reviewer: rvSel.value,
+        },
       });
       m.close();
       toast(tr('已保存'));
@@ -3966,7 +4086,7 @@
     });
     on('state', (st) => {
       const r = S.rooms.find((x) => x.id === st.roomId);
-      const busy = !!st.running || st.queue.length > 0;
+      const busy = !!st.running || st.queue.length > 0 || !!st.review;
       notifyState(st, busy);
       if (r && r.busy !== busy) {
         r.busy = busy;
@@ -4037,17 +4157,27 @@
     desktop.notify(title, body);
   }
   function notifyMessage(roomId, m) {
+    // 自动审查转交给你的：这时才提醒（审查模型代你答复了的不用）
+    if (m.kind === 'review') {
+      const asker = (m.review && m.review.asker && m.review.asker.name) || tr('成员');
+      if (m.review && m.review.decision !== 'approve') notify(roomId, tr('{name} 需要你', { name: asker }), tr('{name}：{text}', { name: roomName(roomId), text: plain(m.text).slice(0, 100) }));
+      return;
+    }
     if (m.kind !== 'agent') return;
     if (m.status === 'error') return notify(roomId, tr('{name} 出错了', { name: m.name }), tr('{name}：{text}', { name: roomName(roomId), text: plain(m.error).slice(0, 90) }));
+    // 自动执行的会话先等审查模型看完，转交给你时再提醒
+    const r = S.rooms.find((x) => x.id === roomId);
+    if (r && r.approval === 'auto') return;
     if (/@(用户|user|human|人类)/i.test(plain(m.text))) notify(roomId, tr('{name} 需要你', { name: m.name }), tr('{name}：{text}', { name: roomName(roomId), text: plain(m.text).slice(0, 100) }));
   }
   function notifyState(st, busy) {
     const was = S.busyRooms[st.roomId];
     S.busyRooms[st.roomId] = busy && !st.paused;
     if (st.paused && was) {
-      // 出错时已经弹过「X 出错了」，不再重复
+      // 出错时已经弹过「X 出错了」，成员 @用户 时也弹过「X 需要你」，不再重复
       if (Date.now() - (S.notifiedAt[st.roomId] || 0) > 4000) {
-        notify(st.roomId, tr('接力暂停了'), tr('{name}：AI 之间已经自动接力 {n} 轮，等你确认', { name: roomName(st.roomId), n: st.autoTurns }));
+        if (st.pauseReason === 'ask' && st.asked) notify(st.roomId, tr('接力暂停了'), tr('{name}：{asker} 在等你回复', { name: roomName(st.roomId), asker: st.asked.name }));
+        else notify(st.roomId, tr('接力暂停了'), tr('{name}：AI 之间已经自动接力 {n} 轮，等你确认', { name: roomName(st.roomId), n: st.autoTurns }));
       }
     }
     else if (was && !busy && Date.now() - (S.notifiedAt[st.roomId] || 0) > 4000) {

@@ -4,6 +4,7 @@
 // - 成员一个接一个执行（共用一个项目文件夹，同一时间只有一个在改文件，避免冲突）
 // - 成员的最终回复里 @ 了谁，谁就接着做 —— AI 之间就这样自己交流
 // - 自动接力达到上限会暂停，等用户确认；用户随时可以停止
+// - 成员 @用户 时按会话设置处理：停下来等用户（人工审查）、先问审查模型（自动执行），或者照常往下走（全权代理）
 const fs = require('fs');
 const adapters = require('./adapters');
 const files = require('./files');
@@ -11,7 +12,7 @@ const skills = require('./skills');
 const acceptance = require('./acceptance');
 const { recordRun } = require('./usage');
 const { t: tr } = require('./i18n');
-const { parseMentions, buildCliPrompt, buildApiMessages } = require('./prompt');
+const { parseMentions, buildCliPrompt, buildApiMessages, buildReviewPrompt, buildReviewApiMessages, parseVerdict, approvalMode } = require('./prompt');
 
 const { RESUME_FAIL } = require('./adapters/common'); // 续上旧会话失败时换新会话重来
 
@@ -63,9 +64,10 @@ class Orchestrator {
   rt(roomId) {
     let r = this.rts.get(roomId);
     if (!r) {
-      // pauseReason：limit = 自动接力到了上限；error = 有成员出错，后面的先不做。
+      // pauseReason：limit = 自动接力到了上限；error = 有成员出错，后面的先不做；ask = 有成员在等用户回复（asked 是谁）。
+      // review：审查模型正在审查某个成员的请求（这时也不往下走）。
       // task：这次任务从哪条用户消息开始（空闲时发的消息开始一次新任务）；base：任务开始时的文件快照（见 keepBase）
-      r = { queue: [], running: null, paused: false, pauseReason: '', failed: null, autoTurns: 0, timer: null, lastSent: 0, task: 0, base: null };
+      r = { queue: [], running: null, paused: false, pauseReason: '', failed: null, asked: null, review: null, autoTurns: 0, timer: null, lastSent: 0, task: 0, base: null };
       this.rts.set(roomId, r);
     }
     return r;
@@ -81,6 +83,8 @@ class Orchestrator {
       paused: r.paused,
       pauseReason: r.paused ? r.pauseReason : '',
       failed: r.paused ? r.failed : null,
+      asked: r.paused && r.asked ? { agentId: r.asked.agentId, name: r.asked.name, reason: r.asked.reason || '' } : null,
+      review: r.review ? { agentId: r.review.asker.id, name: r.review.asker.name, by: r.review.by, startedAt: r.review.startedAt } : null,
       autoTurns: r.autoTurns,
       sessions: room ? Object.keys(room.sessions || {}) : [], // 哪些成员已经有会话记忆
     };
@@ -147,20 +151,26 @@ class Orchestrator {
   postUser(roomId, text) {
     const room = this.store.getRoom(roomId);
     if (!room) throw new Error(tr('会话不存在'));
+    const r = this.rt(roomId);
+    // 有成员在等你回复（接力停在那里，或者审查模型正在替你看）：没 @ 人就交给问你的那位。
+    // 回复里的成员先做，原来排着的再接着往下
+    const waiting = r.review ? r.review.asker.id : r.paused && r.asked ? r.asked.agentId : '';
     let targets = this.resolveTargets(room, text);
+    if (!targets.length && waiting && room.agents.some((a) => a.id === waiting && a.enabled !== false)) targets = [waiting];
     if (!targets.length) targets = this.defaultTargets(room);
     const fresh = !this.isBusy(roomId);
     const msg = this.store.addMessage(roomId, { from: 'user', name: '用户', kind: 'user', text });
     this.bus.send('message', { roomId, message: msg });
-    const r = this.rt(roomId);
     if (fresh) {
       // 空闲时发的消息开始一次新任务，开始时的文件快照等第一位成员开始工作时再拍
       r.task = msg.seq;
       r.base = null;
     }
+    this.cancelReview(r); // 你自己回复了，审查模型不用再替你答
     this.unpause(r);
     r.autoTurns = 0;
-    this.enqueue(roomId, targets, { auto: false, seq: msg.seq, byName: '用户' });
+    if (waiting) this.enqueueFront(roomId, targets, { auto: false, seq: msg.seq, byName: '用户' });
+    else this.enqueue(roomId, targets, { auto: false, seq: msg.seq, byName: '用户' });
     if (!room.agents.some((a) => a.enabled !== false)) {
       this.system(roomId, tr('这个会话还没有成员。点标题栏里的成员按钮添加一个 AI，再发消息。'));
     }
@@ -173,6 +183,7 @@ class Orchestrator {
     r.paused = false;
     r.pauseReason = '';
     r.failed = null;
+    r.asked = null;
   }
 
   enqueue(roomId, ids, meta) {
@@ -183,9 +194,20 @@ class Orchestrator {
     }
   }
 
+  // 插到队伍最前面（你回复在等你的成员、审查模型代你答复时），原来排着的接在后面
+  enqueueFront(roomId, ids, meta) {
+    const r = this.rt(roomId);
+    r.queue = [...ids.map((id) => ({ agentId: id, ...meta })), ...r.queue.filter((q) => !ids.includes(q.agentId))];
+  }
+
+  // 排着队的成员名字（暂停时的提示里用）
+  queuedNames(room, r) {
+    return [...new Set(r.queue.map((q) => room.agents.find((a) => a.id === q.agentId)?.name).filter(Boolean))].join(tr('、'));
+  }
+
   pump(roomId) {
     const r = this.rt(roomId);
-    if (r.running || r.paused) return;
+    if (r.running || r.paused || r.review) return;
     const room = this.store.getRoom(roomId);
     if (!room) return;
     while (r.queue.length) {
@@ -200,7 +222,7 @@ class Orchestrator {
         if (r.autoTurns >= max) {
           r.paused = true;
           r.pauseReason = 'limit';
-          const names = [...new Set(r.queue.map((q) => room.agents.find((a) => a.id === q.agentId)?.name).filter(Boolean))].join(tr('、'));
+          const names = this.queuedNames(room, r);
           this.system(roomId, tr('已经自动接力 {n} 轮，先停下来等你确认。点「继续接力」让 {names} 接着做，或者直接发消息给出新指示。', { n: r.autoTurns, names }), { pause: true });
           this.emitState(roomId);
           return;
@@ -308,12 +330,13 @@ class Orchestrator {
 
     if (status === 'done') {
       this.enqueue(roomId, targets, { auto: true, seq: msg.seq, byName: agent.name });
+      this.gate(room, r, agent, msg);
     } else if (status === 'error' && r.queue.length) {
       // 这一环出错了，后面排队的成员先不做：等用户修好后让它重试，或者明确跳过
       r.paused = true;
       r.pauseReason = 'error';
       r.failed = { agentId: agent.id, name: agent.name };
-      const names = [...new Set(r.queue.map((q) => room.agents.find((a) => a.id === q.agentId)?.name).filter(Boolean))].join(tr('、'));
+      const names = this.queuedNames(room, r);
       this.system(
         roomId,
         tr('{name} 运行出错，接力先暂停，排在后面的 {names} 暂时不做。处理好后点「让 {name} 再试一次」从这一步接着做，或者「跳过，继续接力」。', { name: agent.name, names }),
@@ -321,6 +344,110 @@ class Orchestrator {
       );
     }
     this.emitState(roomId);
+  }
+
+  // 成员 @用户 了（要你拍板、提供信息或验收）：按会话设置的「成员需要你确认时」处理（见 prompt.js 的 approvalMode）。
+  // 人工审查：后面还有成员要接着做的话（原来排着的，或者这条里 @ 的），接力停下来等你回复或批准；
+  // 自动执行：先交给审查模型（请你验收的也一样，它会转交给你）；全权代理：照常往下走
+  gate(room, r, agent, msg) {
+    const enabled = room.agents.filter((a) => a.enabled !== false);
+    if (!parseMentions(msg.text, enabled).includes('user')) return;
+    const mode = approvalMode(room);
+    if (mode === 'auto') this.startReview(room, r, agent, msg);
+    else if (mode === 'manual' && r.queue.length) this.holdForUser(room, r, agent, msg.seq);
+  }
+
+  // 接力停在这里等你：回复问你的那位（它先做），或者点「批准，继续接力」让排着的成员接着做
+  holdForUser(room, r, asker, seq, reason = '') {
+    r.paused = true;
+    r.pauseReason = 'ask';
+    r.asked = { agentId: asker.id, name: asker.name, seq, reason };
+    const names = this.queuedNames(room, r);
+    this.system(room.id, tr('{name} 在等你回复，接力先停在这里，排在后面的 {names} 暂时不做。直接回复它，或者点「批准，继续接力」。', { name: asker.name, names }), { pause: true });
+  }
+
+  // 审查模型：会话设置里选的成员（用它的接入方式和模型），或者专门接入的那个（room.reviewer）。一律只读
+  reviewerOf(room) {
+    const id = room.settings.reviewer;
+    const a = id === 'own' ? room.reviewer : id ? room.agents.find((x) => x.id === id) : null;
+    return a ? { ...a, permission: 'readonly' } : null;
+  }
+
+  startReview(room, r, asker, msg) {
+    const rv = this.reviewerOf(room);
+    if (!rv) {
+      // 选了自动执行，但还没选审查模型：当成人工审查
+      if (r.queue.length) this.holdForUser(room, r, asker, msg.seq, tr('还没有选审查模型，先交给你确认'));
+      return;
+    }
+    const review = (r.review = {
+      asker: { id: asker.id, name: asker.name, role: asker.role || '' },
+      seq: msg.seq,
+      by: { name: rv.name, adapter: rv.adapter, model: rv.model || '', own: room.settings.reviewer === 'own' },
+      startedAt: Date.now(),
+      stopped: false,
+      cancel: null,
+    });
+    this.runReview(room, rv, review, msg)
+      .catch((e) => ({ error: e.message || String(e) }))
+      .then((out) => this.afterReview(room.id, review, out))
+      .catch((e) => console.error('[review]', e))
+      .finally(() => this.pump(room.id));
+  }
+
+  async runReview(room, rv, review, msg) {
+    const adapter = adapters.get(rv.adapter);
+    if (!adapter) throw new Error(tr('未知的接入方式：{name}', { name: rv.adapter }));
+    if (!room.workspace || !fs.existsSync(room.workspace)) throw new Error(tr('项目文件夹不存在：{path}', { path: room.workspace || tr('（未设置）') }));
+    const args = { room, asker: review.asker, msg, messages: this.store.messages(room.id), logPath: this.store.logPath(room) };
+    // 每次都是新会话，不带记忆；过程不显示，只看结论
+    const ctx = { room, agent: rv, cwd: room.workspace, sessionId: null, emit: () => {} };
+    if (adapter.stateless) ctx.apiMessages = buildReviewApiMessages(args);
+    else ctx.prompt = buildReviewPrompt(args);
+    const h = adapter.run(ctx);
+    review.cancel = h.cancel;
+    if (review.stopped) h.cancel();
+    const out = await h.done;
+    recordRun(this.usage, { room, agent: rv, res: out, startedAt: review.startedAt, side: false }).catch(() => {});
+    return out;
+  }
+
+  // 审查完：代你答复的，问你的那位先接着做（自动接力，算进上限）；转交你的，接力停下来等你
+  afterReview(roomId, review, out) {
+    const r = this.rt(roomId);
+    if (r.review !== review) return; // 停止了，或者你已经自己回复了
+    r.review = null;
+    const room = this.store.getRoom(roomId);
+    if (!room) return;
+    const v = (!out.error && parseVerdict(out.text)) || {
+      decision: 'escalate',
+      reason: out.error ? tr('审查模型运行出错：{error}', { error: clip(out.error, 300) }) : tr('审查模型没有给出明确的结论'),
+      reply: '',
+    };
+    const asker = room.agents.find((a) => a.id === review.asker.id && a.enabled !== false);
+    const approve = v.decision === 'approve' && !!asker;
+    const msg = this.store.addMessage(roomId, {
+      from: 'review',
+      name: '自动审查',
+      kind: 'review',
+      text: approve ? `@${asker.name} ${v.reply || tr('同意，按你推荐的方案继续。')}` : v.reason || tr('这一步要你亲自确认'),
+      review: { decision: approve ? 'approve' : 'escalate', reason: v.reason, asker: review.asker, by: review.by, ask: review.seq },
+      meta: { ms: Date.now() - review.startedAt, model: out.model || review.by.model },
+    });
+    this.bus.send('message', { roomId, message: msg });
+    if (approve) this.enqueueFront(roomId, [asker.id], { auto: true, seq: msg.seq, byName: '自动审查' });
+    else if (r.queue.length) this.holdForUser(room, r, review.asker, review.seq, v.reason);
+    this.emitState(roomId);
+  }
+
+  cancelReview(r) {
+    const review = r.review;
+    if (!review) return;
+    r.review = null;
+    review.stopped = true;
+    try {
+      if (review.cancel) review.cancel();
+    } catch {}
   }
 
   // 任务开始时的文件快照：就是这次任务第一轮开始前拍的那张（runTurn 的 before），交付验收时用来核对原有文件。
@@ -436,8 +563,9 @@ class Orchestrator {
 
   stop(roomId) {
     const r = this.rt(roomId);
-    const hadQueue = r.queue.length > 0 || r.paused;
+    const hadQueue = r.queue.length > 0 || r.paused || !!r.review;
     r.queue = [];
+    this.cancelReview(r);
     this.unpause(r);
     if (r.running) {
       r.running.stopped = true;
@@ -459,6 +587,7 @@ class Orchestrator {
     if (!agent) throw new Error(tr('成员不存在'));
     if (agent.enabled === false) throw new Error(tr('{name} 已停用', { name: agent.name }));
     const r = this.rt(roomId);
+    this.cancelReview(r);
     this.unpause(r);
     // 插到队伍最前面：重试成功后，原来排在后面的成员再接着做
     r.queue = r.queue.filter((q) => q.agentId !== agentId);
@@ -490,17 +619,18 @@ class Orchestrator {
 
   isBusy(roomId) {
     const r = this.rt(roomId);
-    return !!r.running || r.queue.length > 0;
+    return !!r.running || r.queue.length > 0 || !!r.review;
   }
 
   anyBusy() {
-    for (const r of this.rts.values()) if (r.running || r.queue.length) return true;
+    for (const r of this.rts.values()) if (r.running || r.queue.length || r.review) return true;
     return false;
   }
 
   stopAll() {
     for (const [roomId, r] of this.rts) {
       r.queue = [];
+      this.cancelReview(r);
       if (r.running) {
         r.running.stopped = true;
         try {

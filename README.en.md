@@ -99,6 +99,17 @@ Nothing is installed until you click, and quitting Nightshift doesn't install it
 | Auto-relay limit | After this many back-to-back AI handoffs (10 by default) the relay pauses until you click "Continue relay", so the AIs can't @mention each other forever. |
 | One at a time | Members take turns in order, so only one is changing files at any moment and nobody overwrites anybody else. |
 | Pause on error | When a member hits an error, the members queued after it wait. Click "Have it try again" to pick up from that step once it works, "Skip and continue relay", or "Stop". |
+| When a member needs you | What happens when a member @mentions you (@user) to make a call, give information or check the result; see the next section. By default ("Manual review") the relay stops and waits for you. |
+
+### When a member needs you
+
+When a member @mentions you (@user) in a reply, it needs something from you: pick an option, approve running a program, do something on your computer, or check the result. Choose how this is handled under "When a member needs you" in "Chat settings":
+
+- **Manual review** (default): if other members would carry on next (members already queued, or members @mentioned in that reply), the relay stops there and doesn't move on. A note above the message box says who is waiting for you. Just reply: a reply that doesn't @mention anyone goes to the member who asked, it goes first, and the queued members continue after it. If no reply is needed, click "Approve and continue" to let the queued members carry on, or "Stop".
+- **Automatic**: a reviewer model looks at the request first. It answers low-risk requests for you, such as changing files only inside the project folder, running the project's own build or test scripts, or picking one of several options. The answer is posted to the chat as "Auto review", and the member who asked carries on. It hands the request to you only for high-risk actions (deleting or overwriting files, changing system settings, installing software, anything involving accounts, keys or payments, publishing or pushing anywhere), when you need to do something yourself (run something on your computer, sign in, provide a key, check the result in person), or when it's unsure or fails. The relay then stops just like manual review, and the note above the message box says why.
+- **Full autonomy**: no approval needed, and the relay never stops to wait for you. Members are also told to make their own calls, and to @mention you only when they need something only you can provide.
+
+The reviewer can be a member of the chat, or a model you connect just for reviewing with "Connect a dedicated reviewer…" (you pick how it connects and which model, just like a member, and it doesn't take part in the relay). It's read-only: it can look at project files to decide, but won't change anything. Each review is a fresh conversation, and its tokens show up under "Usage". New chats copy these settings along with the members.
 
 A few common patterns:
 

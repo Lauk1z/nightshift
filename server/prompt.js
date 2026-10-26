@@ -10,6 +10,22 @@ const RESERVED = [...USER_ALIASES, ...ALL_ALIASES, '系统', 'system', '你'];
 const LANG_NAMES = { 'zh-Hans': '简体中文', 'zh-Hant': '繁体中文', en: '英文（English）' };
 const replyLang = () => LANG_NAMES[require('./i18n').lang()] || '简体中文';
 
+// 成员 @用户（要用户拍板、提供信息或验收）时怎么办，会话设置里选：
+//   manual 人工审查：后面还有成员要接着做的话，接力停下来，等用户回复或批准（默认）
+//   auto   自动执行：先交给审查模型，风险低的由它代用户答复；高风险的、要用户亲自动手的才转给用户
+//   full   全权代理：接力不停，成员自己拿主意
+const APPROVAL = ['manual', 'auto', 'full'];
+const approvalMode = (room) => {
+  const v = room && room.settings && room.settings.approval;
+  return APPROVAL.includes(v) ? v : 'manual';
+};
+const RULE_ASK = {
+  manual: '6. 需要用户拍板、提供信息或验收时，@用户，然后停下来等。这时接力会暂停，排在后面的队友要等用户回复或批准以后才接着做。',
+  auto:
+    '6. 需要用户拍板、提供信息或验收时，@用户，然后停下来等。这类请求会先交给审查模型替用户把关：风险低的由它代用户答复（发言人是「自动审查」，按用户的答复对待）；高风险的操作、必须用户亲自动手的，才转给用户。所以请求里要写清楚要做什么、为什么、有什么风险。',
+  full: '6. 用户已经授权你们全权处理：需要拍板时自己选最稳妥的方案接着做，不要停下来等用户批准。只有缺少只有用户才能提供的东西（账号、密钥、只有用户知道的需求，或者必须在用户电脑上亲手操作）时才 @用户。',
+};
+
 function oneLine(s, n) {
   s = String(s || '').replace(/\s+/g, ' ').trim();
   return s.length > n ? s.slice(0, n) + '…' : s;
@@ -82,7 +98,7 @@ function protocol(room, agent, logPath) {
     '3. 文件都放在共享的项目文件夹里，用相对路径创建和修改，不要写到项目文件夹以外。说「做完了」之前先确认文件确实已经在项目文件夹里；说测试通过之前要真的运行过，没运行就写明没运行。',
     '4. 每条发言后面括号里的「这一轮改动的文件」「这一轮没有改动项目文件夹里的文件」「这一轮有文件写到了项目文件夹以外」「交付验收清单」是系统按实际文件核对出来的，和发言里说的对不上时以它为准。',
     `5. 需要队友接着做或回答问题时，在最终回复里 @ 对方的名字，例如「@${example} 请根据 docs/design.md 实现首页」。只有被 @ 的成员会被唤醒；可以一次 @ 多人，会按顺序轮流执行。`,
-    '6. 需要用户拍板、提供信息或验收时，@用户，然后停下来等。',
+    RULE_ASK[approvalMode(room)],
     '7. 你这一步做完、也不需要任何人接着做时，不要 @ 任何人，接力会自然结束。',
     '8. 只在需要对方行动时才用 @。只是提到某人时直接写名字、不要加 @（加了会把对方唤醒）。不要 @ 自己。',
     '9. 尊重分工：不要重做别人已经完成的部分；对别人的工作有意见，在群里说明并 @ 对方。',
@@ -109,6 +125,7 @@ function changedFiles(m) {
 function renderMsg(m, selfId, perMsg = 12000) {
   let who;
   if (m.from === 'user') who = '用户';
+  else if (m.kind === 'review') who = m.review && m.review.decision === 'approve' ? '自动审查（审查模型代用户答复，按用户的答复对待）' : '自动审查（已转交用户确认）';
   else who = m.name + (m.role ? `（${m.role}）` : '') + (m.from === selfId ? '（你之前的发言）' : '');
   let text = String(m.text || '').trim();
   if (text.length > perMsg) text = text.slice(0, perMsg) + '\n…（太长，已截断）';
@@ -150,12 +167,14 @@ function turnInstruction(room, agent, trigger) {
     .map((a) => '@' + a.name)
     .join(' ');
   const why = trigger && trigger.byName ? `${trigger.byName === '用户' ? '用户' : trigger.byName} 在 #${trigger.seq} 里 @ 了你。` : '';
+  // 全权代理每一轮都提醒（有会话记忆的成员只在第一轮看到完整的协作规则，中途改了设置也要知道）
+  const ask = approvalMode(room) === 'full' ? '用户授权你们全权处理，自己拿主意，只有缺少只有用户能提供的东西时才 @用户' : '需要用户决定就 @用户';
   return [
     // 打开了交付验收清单的会话：每一轮都附上，中途才打开的、有会话记忆的成员也能看到
     ...(room.settings && room.settings.acceptance ? [promptSection(), ''] : []),
     '---',
     `现在轮到你（${agent.name}${agent.role ? '，' + agent.role : ''}）。${why}`,
-    `完成你这一步，最终回复会发到群里。需要队友接手就 @ 名字（${names || '目前没有其他成员'}），需要用户决定就 @用户，不需要任何人行动就不要 @。`,
+    `完成你这一步，最终回复会发到群里。需要队友接手就 @ 名字（${names || '目前没有其他成员'}），${ask}，不需要任何人行动就不要 @。`,
   ].join('\n');
 }
 
@@ -204,6 +223,80 @@ function buildApiMessages({ room, agent, messages, trigger, logPath, skillText }
   push('user', turnInstruction(room, agent, trigger));
   if (out[1] && out[1].role === 'assistant') out.splice(1, 0, { role: 'user', content: '（群聊开始）' });
   return out;
+}
+
+// ---------- 自动审查（「成员要你确认时」选了自动执行） ----------
+// 成员 @用户 提出要用户确认的事时先问审查模型：风险低的它代用户答复，高风险的、要用户亲自动手的转给用户。
+// 审查模型只读，每次都是新会话（不带记忆），看最近的群聊和这一条请求
+function reviewProtocol(room) {
+  return [
+    '# 自动审查',
+    '你是一个多 AI 协作群聊的审查员，替人类用户（项目负责人）把关。群里的 AI 成员 @用户 提出了要用户确认的问题或请求，用户让你先审查，再决定要不要叫他本人来。',
+    '',
+    '## 判断标准',
+    '符合下面任意一条，就转交用户（escalate）：',
+    '1. 高风险操作：删除或覆盖文件（尤其是项目文件夹以外的）、改系统设置或注册表、安装或卸载软件、运行来历不明的程序或从网上下载再执行、涉及账号密码密钥或付款、对外发布或推送（git push、发版、发消息、发邮件）、大批量且难以撤销的改动。',
+    '2. 明确要用户亲自动手，或者要只有用户才有的东西：在用户自己的电脑上运行或点击、登录、提供 API Key 或账号、只有用户知道的需求细节，或者要用户亲自验收（试玩、看效果、确认结果）。',
+    '3. 拿不准的。',
+    '其余风险低的请求由你代用户答复（approve）：比如只在项目文件夹里读写文件、运行项目里的构建或测试脚本、在几个方案之间选一个（选成员推荐的，或者你认为最稳妥的）、确认可以继续下一步。',
+    '',
+    '可以只读地查看项目文件来帮助判断（比如看看要运行的脚本里写了什么），但不要修改任何文件，也不要运行会改动东西的命令。',
+    '',
+    '## 项目文件夹',
+    room.workspace,
+  ].join('\n');
+}
+
+function reviewTask(asker, msg) {
+  return [
+    `## 要审查的请求（#${msg.seq}，${asker.name}${asker.role ? `（${asker.role}）` : ''} 发的）`,
+    '',
+    String(msg.text || '').trim(),
+    '',
+    '---',
+    '只输出一个 JSON 对象，不要别的文字：',
+    `{"decision": "approve 或 escalate", "reason": "一句话说明为什么", "reply": "approve 时用用户的口吻给 ${asker.name} 的答复：明确选哪个方案、可以做什么、要注意什么，不要 @ 任何人；escalate 时留空"}`,
+    `reason 和 reply 用${replyLang()}。`,
+  ].join('\n');
+}
+
+// 请求之前的群聊（不含这一条），给审查模型判断上下文
+const reviewContext = (msgs, msg, logPath) => {
+  const earlier = msgs.filter((m) => visible(m) && m.seq < msg.seq);
+  return '## 最近的群聊记录\n\n' + (earlier.length ? transcript(earlier, '', 30000, logPath) : '（没有更早的消息）');
+};
+
+function buildReviewPrompt({ room, asker, msg, messages, logPath }) {
+  return [reviewProtocol(room), reviewContext(messages, msg, logPath), reviewTask(asker, msg)].join('\n\n');
+}
+
+function buildReviewApiMessages({ room, asker, msg, messages, logPath }) {
+  return [
+    { role: 'system', content: reviewProtocol(room) },
+    { role: 'user', content: reviewContext(messages, msg, logPath) + '\n\n' + reviewTask(asker, msg) },
+  ];
+}
+
+// 审查模型的结论：从回复里找 JSON（可能包在 ```json 里，前后还有别的话）。认不出来就返回 null，当作转交用户
+function parseVerdict(text) {
+  const s = String(text || '');
+  const tries = [...s.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)].map((m) => m[1]);
+  const i = s.indexOf('{');
+  const j = s.lastIndexOf('}');
+  if (i >= 0 && j > i) tries.push(s.slice(i, j + 1));
+  for (const t of tries) {
+    let v;
+    try {
+      v = JSON.parse(t.trim());
+    } catch {
+      continue;
+    }
+    if (!v || typeof v !== 'object') continue;
+    const d = String(v.decision || '').trim().toLowerCase();
+    const decision = /^(approve|approved|allow|yes|ok)$/.test(d) ? 'approve' : /^(escalate|human|user|ask|deny|reject|no)$/.test(d) ? 'escalate' : '';
+    if (decision) return { decision, reason: oneLine(v.reason, 400), reply: String(v.reply || '').trim().slice(0, 4000) };
+  }
+  return null;
 }
 
 // ---------- 侧边对话 ----------
@@ -297,6 +390,11 @@ module.exports = {
   buildApiMessages,
   buildSidePrompt,
   buildSideApiMessages,
+  buildReviewPrompt,
+  buildReviewApiMessages,
+  parseVerdict,
+  approvalMode,
+  APPROVAL,
   protocol,
   USER_ALIASES,
   ALL_ALIASES,

@@ -290,6 +290,165 @@ test('停止：正在执行的成员被中止，排队清空', async () => {
   assert.strictEqual(agentMsgs[0].status, 'stopped');
 });
 
+// ---- 成员 @用户 时：人工审查（默认）/ 自动执行 / 全权代理 ----
+const said = (store, room) => store.messages(room.id).filter((m) => m.kind === 'agent' || m.kind === 'review').map((m) => `${m.kind === 'review' ? '审查' : m.name}`);
+
+test('人工审查：成员 @用户 时排在后面的先不做；没 @ 人的回复交给问你的那位，它先做，排着的再接着做', async () => {
+  const prompts = {};
+  let gptRuns = 0;
+  const { store, orch, room } = setupRoom((agent, prompt) => {
+    prompts[agent.name] = (prompts[agent.name] || []).concat(prompt);
+    if (agent.name === 'GPT') return ++gptRuns === 1 ? '**@用户** 请二选一：1. 下一轮允许我运行 build.bat；2. 你自己运行，把输出贴过来' : '按方案 1 构建通过';
+    return 'Claude 审查完了';
+  });
+  orch.postUser(room.id, '@GPT 写代码，然后 @Claude 审查');
+  await new Promise((r) => setTimeout(r, 300));
+  const st = orch.state(room.id);
+  assert.deepStrictEqual([st.paused, st.pauseReason, st.asked.name, st.queue.map((q) => q.agentId)], [true, 'ask', 'GPT', ['c']]);
+  assert.ok(!prompts.Claude, 'Claude 还没开始');
+  assert.ok(store.messages(room.id).some((m) => m.kind === 'system' && m.pause && /GPT 在等你回复/.test(m.text)));
+  assert.match(prompts.GPT[0], /这时接力会暂停/);
+  orch.postUser(room.id, '选 1');
+  await idle(orch, room.id);
+  assert.deepStrictEqual(said(store, room), ['GPT', 'GPT', 'Claude']);
+  assert.match(prompts.GPT[1], /选 1/);
+  assert.strictEqual(orch.state(room.id).paused, false);
+});
+
+test('人工审查：点「批准，继续接力」排着的接着做；@ 了用户但后面没人要做时不用停', async () => {
+  const { store, orch, room } = setupRoom((agent) => (agent.name === 'GPT' ? '@用户 要不要加排行榜？' : 'Claude 完成'));
+  orch.postUser(room.id, '@GPT @Claude 一起来');
+  await new Promise((r) => setTimeout(r, 300));
+  assert.strictEqual(orch.state(room.id).pauseReason, 'ask');
+  orch.resume(room.id);
+  await idle(orch, room.id);
+  assert.deepStrictEqual(said(store, room), ['GPT', 'Claude']);
+  orch.postUser(room.id, '@GPT 再问一次');
+  await idle(orch, room.id);
+  assert.strictEqual(orch.state(room.id).paused, false);
+});
+
+test('全权代理：成员 @用户 也不停；提示词里告诉它们自己拿主意', async () => {
+  const prompts = {};
+  const { store, orch, room } = setupRoom(
+    (agent, prompt) => {
+      prompts[agent.name] = prompt;
+      return agent.name === 'GPT' ? '@用户 要不要加排行榜？' : 'Claude 完成';
+    },
+    { approval: 'full' }
+  );
+  orch.postUser(room.id, '@GPT @Claude 一起来');
+  await idle(orch, room.id);
+  assert.deepStrictEqual(said(store, room), ['GPT', 'Claude']);
+  assert.match(prompts.GPT, /用户已经授权你们全权处理/);
+  assert.match(prompts.Claude, /自己拿主意，只有缺少只有用户能提供的东西时才 @用户/);
+});
+
+test('自动执行：审查模型代你答复的，问你的成员先接着做，然后才轮到排着的；审查只读、每次新会话', async () => {
+  const prompts = {};
+  const reviews = [];
+  let gptRuns = 0;
+  const { store, orch, room } = setupRoom(
+    (agent, prompt) => {
+      if (agent.name === '审查') {
+        reviews.push({ permission: agent.permission, prompt });
+        return '好的。\n```json\n{"decision": "approve", "reason": "只在项目里构建，风险低", "reply": "可以，运行 build.bat，出错就修"}\n```';
+      }
+      prompts[agent.name] = (prompts[agent.name] || []).concat(prompt);
+      if (agent.name === 'GPT') return ++gptRuns === 1 ? '@用户 下一轮允许我运行 build.bat 吗？' : '构建通过';
+      return 'Claude 审查完了';
+    },
+    { approval: 'auto', reviewer: 'own' }
+  );
+  room.reviewer = { id: 'rv', name: '审查', adapter: 'fake', permission: 'edit', enabled: true };
+  orch.postUser(room.id, '@GPT 写代码，然后 @Claude 审查');
+  await idle(orch, room.id);
+  assert.deepStrictEqual(said(store, room), ['GPT', '审查', 'GPT', 'Claude']);
+  const rv = store.messages(room.id).find((m) => m.kind === 'review');
+  assert.deepStrictEqual([rv.review.decision, rv.review.reason, rv.review.by.own], ['approve', '只在项目里构建，风险低', true]);
+  assert.match(rv.text, /^@GPT 可以，运行 build\.bat/);
+  assert.strictEqual(reviews.length, 1);
+  assert.strictEqual(reviews[0].permission, 'readonly', '审查模型只读');
+  assert.match(reviews[0].prompt, /# 自动审查/);
+  assert.match(reviews[0].prompt, /下一轮允许我运行 build\.bat 吗/);
+  assert.match(prompts.GPT[0], /先交给审查模型替用户把关/);
+  assert.match(prompts.GPT[1], /自动审查（审查模型代用户答复，按用户的答复对待）/);
+  assert.match(prompts.GPT[1], /自动审查 在 #\d+ 里 @ 了你/);
+  assert.ok(!room.sessions.rv, '审查不留会话');
+});
+
+test('自动执行：要你亲自动手的转交给你，接力停下；审查模型没给出结论也转交；成员也可以当审查模型', async () => {
+  let verdict = '{"decision": "escalate", "reason": "要在你的电脑上双击运行，需要你亲自操作", "reply": ""}';
+  const { store, orch, room } = setupRoom(
+    (agent, prompt) => {
+      if (/# 自动审查/.test(prompt)) return verdict;
+      return agent.name === 'GPT' ? '@用户 请你在 E:\\test 里双击 build.bat，把输出贴给我' : 'Claude 完成';
+    },
+    { approval: 'auto', reviewer: 'c' }
+  );
+  orch.postUser(room.id, '@GPT @Claude 一起来');
+  await new Promise((r) => setTimeout(r, 400));
+  let st = orch.state(room.id);
+  assert.deepStrictEqual([st.paused, st.pauseReason, st.asked.name], [true, 'ask', 'GPT']);
+  assert.match(st.asked.reason, /需要你亲自操作/);
+  const rv = store.messages(room.id).find((m) => m.kind === 'review');
+  assert.deepStrictEqual([rv.review.decision, rv.review.by.name, rv.review.by.own], ['escalate', 'Claude', false]);
+  assert.deepStrictEqual(said(store, room), ['GPT', '审查'], 'Claude 还没开始');
+  orch.stop(room.id);
+  verdict = '我觉得可以';
+  orch.postUser(room.id, '@GPT @Claude 再来');
+  await new Promise((r) => setTimeout(r, 400));
+  st = orch.state(room.id);
+  assert.strictEqual(st.pauseReason, 'ask');
+  assert.match(st.asked.reason, /没有给出明确的结论/);
+  orch.stop(room.id);
+  await idle(orch, room.id);
+});
+
+test('自动执行：审查时你自己回复了，审查作废，回复交给问你的那位', async () => {
+  let cancelled = false;
+  adapters.register({
+    id: 'slow',
+    label: 'Slow',
+    run() {
+      let timer;
+      let finish;
+      const done = new Promise((resolve) => {
+        finish = resolve;
+        timer = setTimeout(() => resolve({ text: '{"decision": "approve", "reason": "x", "reply": "可以"}' }), 600);
+      });
+      const cancel = () => {
+        cancelled = true;
+        clearTimeout(timer);
+        finish({ error: '已中止' });
+      };
+      return { done, cancel };
+    },
+  });
+  const { store, orch, room } = setupRoom((agent, prompt) => (agent.name === 'GPT' && !/选 1/.test(prompt) ? '@用户 选哪个方案？' : `${agent.name} 完成`), {
+    approval: 'auto',
+    reviewer: 'own',
+  });
+  room.reviewer = { id: 'rv', name: '审查', adapter: 'slow', enabled: true };
+  orch.postUser(room.id, '@GPT @Claude 一起来');
+  await new Promise((r) => setTimeout(r, 150));
+  assert.strictEqual(orch.state(room.id).review.name, 'GPT', '正在审查 GPT 的请求');
+  orch.postUser(room.id, '选 1');
+  await idle(orch, room.id);
+  assert.ok(cancelled, '审查被取消');
+  assert.deepStrictEqual(said(store, room), ['GPT', 'GPT', 'Claude']);
+});
+
+test('自动审查：从审查模型的回复里认出结论', () => {
+  const { parseVerdict, approvalMode } = require('../server/prompt');
+  assert.deepStrictEqual(parseVerdict('```json\n{"decision":"approve","reason":"低风险","reply":"可以"}\n```'), { decision: 'approve', reason: '低风险', reply: '可以' });
+  assert.deepStrictEqual(parseVerdict('结论：{"decision": "Escalate", "reason": "要你亲自运行"} 就这样'), { decision: 'escalate', reason: '要你亲自运行', reply: '' });
+  assert.strictEqual(parseVerdict('我觉得可以'), null);
+  assert.strictEqual(parseVerdict('{"decision": "maybe"}'), null);
+  assert.strictEqual(approvalMode({ settings: {} }), 'manual');
+  assert.strictEqual(approvalMode({ settings: { approval: 'yolo' } }), 'manual');
+});
+
 test('交付核对：写到项目外、什么都没改，记在消息上，下一位成员的记录里也写明', async () => {
   const { rel, outside } = require('../server/adapters/common');
   const dir = tmp();
@@ -1590,13 +1749,30 @@ test('设置和用量接口；换了语言，服务端的报错和 boot.js 跟�
       await call('POST', `/api/rooms/${rid}/agents`, { name: 'DS', adapter: 'openai', model: 'deepseek-chat', permission: 'edit', enabled: false, api: { baseUrl: 'http://127.0.0.1:9/v1', apiKey: 'sk-test' } })
     ).json();
     await call('PATCH', `/api/rooms/${rid}`, { settings: { defaultAgent: ag.id, maxAutoTurns: 7 } });
-    // 新会话默认照搬当前会话的成员：新的 id，配置（连同 Key）一样，默认接收人跟着对上
+    // 成员需要你确认时：只收三种，默认人工审查。审查模型可以是会话成员，也可以专门接入一个（只读，Key 打码）
+    assert.strictEqual(made.room.settings.approval, 'manual');
+    assert.strictEqual((await call('PATCH', `/api/rooms/${rid}`, { settings: { approval: 'yolo' } })).status, 400);
+    const rs = (await call('PATCH', `/api/rooms/${rid}`, { settings: { approval: 'auto', reviewer: ag.id } })).json().settings;
+    assert.deepStrictEqual([rs.approval, rs.reviewer], ['auto', ag.id]);
+    assert.strictEqual((await call('PATCH', `/api/rooms/${rid}`, { settings: { reviewer: 'own' } })).json().settings.reviewer, '', '还没有专门的审查模型');
+    const withRv = (
+      await call('PUT', `/api/rooms/${rid}/reviewer`, { adapter: 'openai', model: 'deepseek-chat', permission: 'full', api: { baseUrl: 'http://127.0.0.1:9/v1', apiKey: 'sk-reviewer-1234' } })
+    ).json();
+    assert.deepStrictEqual(
+      [withRv.settings.reviewer, withRv.reviewer.permission, withRv.reviewer.api.apiKey, withRv.reviewer.api.hasKey],
+      ['own', 'readonly', 'sk-••••1234', true]
+    );
+    assert.strictEqual((await call('PUT', `/api/rooms/${rid}/reviewer`, { adapter: 'openai', model: '' })).status, 400);
+    // 新会话默认照搬当前会话的成员：新的 id，配置（连同 Key）一样，默认接收人跟着对上；
+    // 「成员需要你确认时」和专门的审查模型也照搬
     const second = (await call('POST', `/api/projects/${made.project.id}/rooms`, { from: rid })).json();
     assert.notStrictEqual(second.id, rid);
     assert.deepStrictEqual(second.agents.map((a) => [a.name, a.model, a.api.hasKey]), [['DS', 'deepseek-chat', true]]);
     assert.notStrictEqual(second.agents[0].id, ag.id);
     assert.strictEqual(second.settings.defaultAgent, second.agents[0].id);
     assert.strictEqual(second.settings.maxAutoTurns, 7);
+    assert.deepStrictEqual([second.settings.approval, second.settings.reviewer, second.reviewer.model, second.reviewer.api.hasKey], ['auto', 'own', 'deepseek-chat', true]);
+    assert.notStrictEqual(second.reviewer.id, withRv.reviewer.id);
     // 改这个会话的成员，不影响另一个会话
     await call('PATCH', `/api/rooms/${second.id}/agents/${second.agents[0].id}`, { model: 'deepseek-reasoner' });
     assert.strictEqual((await call('GET', `/api/rooms/${rid}`)).json().room.agents[0].model, 'deepseek-chat');
@@ -1689,6 +1865,12 @@ test('设置和用量接口；换了语言，服务端的报错和 boot.js 跟�
     assert.strictEqual(onDisk('tests'), 'pass');
     assert.strictEqual((await vote('source', 'fail')).status, 400, '通过了的项不用点');
     assert.strictEqual((await vote('launch', 'pass', 'm_nope')).status, 404);
+    // 当审查模型的成员删掉了，就不再选它；专门的审查模型删掉了也一样
+    await call('PATCH', `/api/rooms/${rid}`, { settings: { reviewer: ag.id } });
+    await call('DELETE', `/api/rooms/${rid}/agents/${ag.id}`);
+    assert.strictEqual((await call('GET', `/api/rooms/${rid}`)).json().room.settings.reviewer, '');
+    const noRv = (await call('DELETE', `/api/rooms/${second.id}/reviewer`)).json();
+    assert.deepStrictEqual([noRv.reviewer, noRv.settings.reviewer], [null, '']);
     // 删会话、删项目
     await call('DELETE', `/api/rooms/${second.id}`);
     assert.strictEqual((await call('GET', `/api/rooms/${second.id}`)).status, 404);

@@ -55,8 +55,11 @@ function normalizeRoom(r) {
   r.lastSeen = r.lastSeen || {};
   r.sideSessions = r.sideSessions || {}; // 侧边对话用的会话，和群聊里的分开
   r.sideSeen = r.sideSeen || {}; // 每个成员上次在侧边对话里回答时，群聊和侧边对话各到了哪一条
-  // acceptance：交付验收清单（见 acceptance.js），默认关
-  r.settings = { maxAutoTurns: 10, defaultAgent: '', acceptance: false, ...(r.settings || {}) };
+  // acceptance：交付验收清单（见 acceptance.js），默认关。
+  // approval：成员 @用户 时怎么办（manual 人工审查 / auto 自动执行 / full 全权代理，见 prompt.js 的 approvalMode）；
+  // reviewer：自动执行时的审查模型，是某个成员的 id，或者 'own'（专门接入的那个，存在 r.reviewer）
+  r.settings = { maxAutoTurns: 10, defaultAgent: '', acceptance: false, approval: 'manual', reviewer: '', ...(r.settings || {}) };
+  r.reviewer = r.reviewer || null;
   r.seq = r.seq || 0;
   return r;
 }
@@ -245,7 +248,7 @@ class Store {
   }
 
   // 只给了文件夹（旧的写法）时，放进用这个文件夹的项目里，没有就新建一个
-  createRoom({ name, workspace, agents = [], settings = {}, projectId, autoName = false }) {
+  createRoom({ name, workspace, agents = [], settings = {}, projectId, autoName = false, reviewer = null }) {
     let project = projectId ? this.getProject(projectId) : null;
     if (!project) project = this.projectFor(workspace) || this.createProject({ name, workspace });
     const now = Date.now();
@@ -256,6 +259,7 @@ class Store {
       workspace: project.workspace,
       agents,
       settings,
+      reviewer,
       autoName,
       createdAt: now,
       updatedAt: now,

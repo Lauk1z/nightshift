@@ -1287,6 +1287,31 @@ body.sorting * {
 .msg.system.pause {
   color: var(--amber);
 }
+/* 自动审查：头像是一面盾牌；右边一个标签，代你答复了是绿的，交给你确认是琥珀色的 */
+.msg.review .who .avatar {
+  background: var(--code-bg);
+  color: var(--graphite);
+}
+.msg.review .who .avatar svg {
+  width: 14px;
+  height: 14px;
+}
+.review-tag {
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+}
+.msg.review.ask .review-tag {
+  color: var(--amber);
+  background: var(--amber-bg);
+}
+.review-why {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: var(--graphite);
+}
 
 .err {
   margin-top: 8px;
@@ -2248,6 +2273,13 @@ body.sorting * {
 .banner.error {
   border-color: color-mix(in srgb, var(--red) 35%, transparent);
   background: var(--red-bg);
+}
+/* 自动审查转交给你时，下面一行小字写原因 */
+.banner-why {
+  display: block;
+  margin-top: 3px;
+  font-size: 12.5px;
+  color: var(--graphite);
 }
 .banner.error b {
   color: var(--red);
@@ -3669,6 +3701,12 @@ select.input {
 .choices {
   display: grid;
   gap: 8px;
+}
+/* 会话设置里「自动执行」下面选审查模型 */
+.reviewer-pick {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
 }
 .choices.cols {
   grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
