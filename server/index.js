@@ -120,7 +120,12 @@ function roomSummary(room) {
     agents: room.agents.map((a) => ({ id: a.id, name: a.name, color: a.color, role: a.role || '', adapter: a.adapter })),
     approval: approvalMode(room), // 自动执行的会话，成员 @用户 时先不弹「需要你」的通知，等审查结果
     busy: orch.isBusy(room.id),
-    last: last ? { name: last.from === 'user' ? tr('你') : last.kind === 'review' ? tr('自动审查') : last.name, text: String(last.text || '').slice(0, 80) } : null,
+    last: last
+      ? {
+          name: last.from === 'user' ? tr('你') : last.kind === 'review' ? tr('自动审查') : last.name,
+          text: String(last.text || (last.attachments || []).map((a) => a.name).join(tr('、'))).slice(0, 80), // 只发了附件的，写附件的名字
+        }
+      : null,
   };
 }
 
@@ -317,10 +322,11 @@ function listDir(p) {
 
 // ---------- 路由 ----------
 const routes = [];
-function route(method, pattern, handler) {
+// opts.raw：请求体不按 JSON 读，交给处理函数自己读（上传附件）
+function route(method, pattern, handler, opts = {}) {
   const keys = [];
   const re = new RegExp('^' + pattern.replace(/:(\w+)/g, (_, k) => (keys.push(k), '([^/]+)')) + '$');
-  routes.push({ method, re, keys, handler });
+  routes.push({ method, re, keys, handler, raw: !!opts.raw });
 }
 
 function needRoom(id) {
@@ -740,21 +746,89 @@ route('POST', '/api/rooms/:id/agents/:aid/run', async (req, { params }) => {
 });
 
 route('POST', '/api/rooms/:id/messages', async (req, { params, body }) => {
-  needRoom(params.id);
+  const at = needRoom(params.id);
   const text = String(body.text || '').trim();
-  if (!text) throw bad(tr('消息不能为空'));
+  let attachments;
+  try {
+    attachments = files.checkAttachments(at.workspace, body.attachments);
+  } catch (e) {
+    throw bad(e.message);
+  }
+  if (!text && !attachments.length) throw bad(tr('消息不能为空'));
   if (text.length > 50000) throw bad(tr('消息太长了（最多 5 万字）'));
-  const msg = orch.postUser(params.id, text);
-  // 还没起名字的会话：用第一条消息起标题
+  const msg = orch.postUser(params.id, text, attachments);
+  // 还没起名字的会话：用第一条消息起标题（只发了附件的，用附件的名字）
   const room = store.getRoom(params.id);
   if (room && room.autoName) {
-    room.name = autoTitle(text) || room.name;
+    room.name = autoTitle(text || attachments.map((a) => a.name).join(' ')) || room.name;
     room.autoName = false;
     store.saveRoom(room);
     bus.send('room', publicRoom(room));
   }
   broadcastRooms();
   return msg;
+});
+
+// ---------- 附件：拖进输入框、或者点「+」添加的文件和文件夹（见 files.js 的 attach） ----------
+// 桌面版按文件在电脑上的完整路径添加：项目里的直接用，项目外的复制进 .agentchat/attachments
+route('POST', '/api/rooms/:id/attachments', async (req, { params, body }) => {
+  const room = needRoom(params.id);
+  if (!fs.existsSync(room.workspace)) throw bad(tr('项目文件夹不存在'));
+  const paths = Array.isArray(body.paths) ? body.paths.map(String).slice(0, 50) : [];
+  if (!paths.length) throw bad(tr('没有要添加的文件'));
+  try {
+    return { items: files.attach(room.workspace, paths) };
+  } catch (e) {
+    throw bad(e.message);
+  }
+});
+
+// 浏览器里拖进来的、拿不到完整路径的：一个文件一个请求，内容就是请求体。batch=new 时新建一批，后面的文件用返回的 batch
+route(
+  'PUT',
+  '/api/rooms/:id/attachments/upload',
+  async (req, { params, query }) => {
+    const room = needRoom(params.id);
+    if (!fs.existsSync(room.workspace)) throw bad(tr('项目文件夹不存在'));
+    const batch = query.get('batch') === 'new' ? files.newBatch(room.workspace) : String(query.get('batch') || '');
+    const dest = files.uploadTarget(room.workspace, batch, query.get('path'));
+    if (!dest) throw bad(tr('文件名不正确'));
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    const size = await saveUpload(req, dest, files.ATTACH_MAX_BYTES);
+    return { batch, base: `${files.ATTACH_DIR}/${batch}`, path: path.relative(room.workspace, dest).replace(/\\/g, '/'), size };
+  },
+  { raw: true }
+);
+
+// 写进文件，超过上限就删掉写了一半的，剩下的内容读完丢掉（这样还能正常回复）
+function saveUpload(req, dest, max) {
+  return new Promise((resolve, reject) => {
+    const out = fs.createWriteStream(dest);
+    let size = 0;
+    let failed = false;
+    const fail = (e) => {
+      if (failed) return;
+      failed = true;
+      req.unpipe(out);
+      out.destroy();
+      req.resume();
+      fs.rm(dest, { force: true }, () => reject(e));
+    };
+    req.on('data', (c) => {
+      size += c.length;
+      if (size > max) fail(new HttpError(413, tr('文件太大了，单个文件最多 {mb} MB', { mb: max / 1024 / 1024 })));
+    });
+    req.on('error', fail);
+    out.on('error', fail);
+    out.on('finish', () => !failed && resolve(size));
+    req.pipe(out);
+  });
+}
+
+// 发出去之前去掉了的附件：删掉复制过来的那份（项目里原有的文件不动）。路径放在 ?path= 里
+route('DELETE', '/api/rooms/:id/attachments', async (req, { params, query }) => {
+  const room = needRoom(params.id);
+  return { removed: files.removeAttachment(room.workspace, query.get('path')) };
 });
 
 // 交付验收清单：「待你确认」的项点了通过 / 不通过，没通过的项点了「仍然通过」（verdict 为空就是取消）。
@@ -1113,7 +1187,7 @@ async function handle(req, res) {
   try {
     const m = url.pathname.match(r.re);
     const params = Object.fromEntries(r.keys.map((k, i) => [k, decodeURIComponent(m[i + 1])]));
-    const body = req.method === 'GET' ? {} : await readBody(req);
+    const body = req.method === 'GET' || r.raw ? {} : await readBody(req);
     const out = await r.handler(req, { params, body, query: url.searchParams, res });
     if (out === undefined) return; // SSE 自己处理
     res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });

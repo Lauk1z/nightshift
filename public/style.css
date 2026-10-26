@@ -1191,6 +1191,42 @@ body.sorting * {
 .msg.user .foot {
   justify-content: flex-end;
 }
+/* 你发的附件：气泡下面靠右一排卡片，点文件预览、点文件夹在文件面板里展开 */
+.msg-atts {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  max-width: min(86%, 620px);
+  margin-top: 6px;
+}
+.att-card {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 260px;
+  padding: 7px 12px 7px 10px;
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  background: var(--raised);
+  text-align: left;
+}
+.att-card:hover {
+  border-color: var(--line-focus);
+}
+.att-card .att-ico svg {
+  width: 18px;
+  height: 18px;
+}
+.att-text {
+  display: grid;
+  min-width: 0;
+  line-height: 1.35;
+}
+.att-card .att-name {
+  font-size: 13.5px;
+  font-weight: 500;
+}
 
 /* 成员的发言：一行头像和名字，下面是正文 */
 .who {
@@ -1736,19 +1772,25 @@ body.sorting * {
 .file-icon.k-doc,
 .tree-ico.k-web,
 .tree-ico.k-word,
-.tree-ico.k-doc {
+.tree-ico.k-doc,
+.att-ico.k-web,
+.att-ico.k-word,
+.att-ico.k-doc {
   color: #4a86e8;
 }
 .file-icon.k-sheet,
-.tree-ico.k-sheet {
+.tree-ico.k-sheet,
+.att-ico.k-sheet {
   color: #2f9a5a;
 }
 .file-icon.k-slide,
-.tree-ico.k-slide {
+.tree-ico.k-slide,
+.att-ico.k-slide {
   color: #d0702e;
 }
 .file-icon.k-pdf,
-.tree-ico.k-pdf {
+.tree-ico.k-pdf,
+.att-ico.k-pdf {
   color: #d84a4a;
 }
 .file-text {
@@ -2315,6 +2357,112 @@ body.sorting * {
   content: attr(data-placeholder);
   color: var(--faint);
   pointer-events: none;
+}
+/* 还没发出去的附件：输入框上面一排小卡片，右边的 × 去掉 */
+.attach-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: -2px 0 10px -6px;
+  cursor: default;
+}
+.att {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 280px;
+  height: 34px;
+  padding: 0 4px 0 8px;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: var(--sheet);
+  font-size: 13px;
+}
+.att.pending {
+  padding-right: 10px;
+  color: var(--graphite);
+}
+.att-ico {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  color: var(--graphite);
+}
+.att-ico svg {
+  width: 16px;
+  height: 16px;
+}
+.att-name {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.att-meta {
+  flex: none;
+  font-size: 11.5px;
+  color: var(--faint);
+}
+.att-x {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--faint);
+}
+.att-x:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+.att-x svg {
+  width: 13px;
+  height: 13px;
+}
+.att-spin {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--rule);
+  border-top-color: var(--graphite);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+/* 拖文件进对话区：整栏盖上一层，松手就添加 */
+.drop-zone {
+  position: absolute;
+  inset: 10px;
+  z-index: 30;
+  display: grid;
+  place-items: center;
+  border: 2px dashed var(--line-focus);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--sheet) 94%, transparent);
+}
+.drop-card {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  max-width: 340px;
+  padding: 0 20px;
+  text-align: center;
+  pointer-events: none;
+}
+.drop-card svg {
+  width: 30px;
+  height: 30px;
+  color: var(--graphite);
+}
+.drop-card b {
+  font-size: 16px;
+  font-weight: 600;
+}
+.drop-card span {
+  font-size: 13px;
+  color: var(--graphite);
 }
 .composer-row {
   display: flex;

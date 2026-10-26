@@ -373,12 +373,15 @@ window.createPanel = function createPanel(ctx) {
       renderList();
     }
 
-    // 搜索结果里点文件夹：退出搜索，在树里展开到它
+    // 搜索结果里点文件夹、消息里点附上的文件夹：退出搜索（正在预览文件的话回到文件列表），在树里展开到它
     function revealDir(p) {
       const s = st();
+      if (!s) return;
       $('#fSearch').value = '';
       s.query = '';
       s.results = null;
+      s.file = null;
+      s.loc = null;
       const parts = p.split('/');
       for (let i = 1; i <= parts.length; i++) s.expanded.add(parts.slice(0, i).join('/'));
       renderList();
@@ -667,7 +670,7 @@ window.createPanel = function createPanel(ctx) {
       if (s && !s.file && !s.results) renderList();
     }
 
-    return { mount, activate, open, onFiles, onRoom, refreshList };
+    return { mount, activate, open, onFiles, onRoom, refreshList, revealDir };
   })();
 
   // =====================================================================
@@ -1571,6 +1574,11 @@ window.createPanel = function createPanel(ctx) {
     toggle,
     state: () => ({ ...P }),
     openFile: (rel, loc) => FILES.open(rel, loc),
+    // 打开文件面板，在树里展开到这个文件夹（消息里附上的文件夹）
+    showDir(rel) {
+      show('files');
+      FILES.revealDir(rel);
+    },
     openUrl: (url) => BROWSER.open(url),
     openHtmlInBrowser: (rel) => BROWSER.openFile(rel),
     onRoom() {

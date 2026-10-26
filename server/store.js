@@ -406,6 +406,7 @@ class Store {
       const when = new Date(msg.ts).toLocaleString('zh-CN', { hour12: false });
       const who = msg.from === 'user' ? '用户' : msg.name + (msg.role ? `（${msg.role}）` : '');
       let note = msg.status === 'error' ? `\n\n> 运行出错：${String(msg.error || '').slice(0, 500)}` : msg.status === 'stopped' ? '\n\n> 被用户中止' : '';
+      if (Array.isArray(msg.attachments) && msg.attachments.length) note += `\n\n> 附件：${msg.attachments.map((a) => a.path + (a.kind === 'dir' ? '（文件夹）' : '')).join('、')}`;
       if (msg.acceptance) note += '\n\n' + promptText(msg.acceptance).replace(/^/gm, '> ');
       fs.appendFileSync(this.logPath(room), `\n## #${msg.seq} ${who}　${when}\n\n${msg.text || ''}${note}\n`, 'utf8');
     } catch {}

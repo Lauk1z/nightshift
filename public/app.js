@@ -299,6 +299,7 @@
     state: null,
     progress: null,
     drafts: {},
+    attach: {}, // 还没发出去的附件，每个会话各记各的（和草稿一样）
     liveKey: null,
     open: new Set(),
     loading: null,
@@ -728,10 +729,12 @@
           <div class="banner" id="banner" hidden></div>
           <form class="composer" id="composer" autocomplete="off">
             <div class="mention-pop" id="mentionPop" role="listbox" hidden></div>
+            <div class="attach-list" id="attachList" hidden></div>
             <div id="input" class="editor" contenteditable="true" role="textbox" aria-multiline="true" aria-label="${tr('消息')}" spellcheck="false"
               data-placeholder="${tr('给团队发消息，用 @ 指定成员，/ 选择技能')}"></div>
             <div class="composer-row">
               <div class="composer-tools">
+                <button type="button" class="tool-btn" data-attach aria-haspopup="menu" title="${tr('添加文件或文件夹（也可以直接拖进来）')}" aria-label="${tr('添加文件或文件夹')}">${ICONS.plus}</button>
                 <button type="button" class="tool-btn" data-insert="@" title="${tr('指定成员（输入 @）')}" aria-label="${tr('指定成员')}">@</button>
                 <button type="button" class="tool-btn" data-insert="/" title="${tr('选择技能（输入 /）')}" aria-label="${tr('选择技能')}">/</button>
               </div>
@@ -740,7 +743,9 @@
             </div>
           </form>
         </div>
-      </div>`;
+      </div>
+      <div class="drop-zone" id="dropZone" hidden><div class="drop-card">${ICONS.plus}<b>${tr('松开鼠标，添加到消息里')}</b>
+        <span>${tr('项目外的文件会复制一份到项目文件夹里，所有成员都能读到')}</span></div></div>`;
     S.liveKey = null;
     renderHeader();
     renderTranscript();
@@ -1651,10 +1656,11 @@
     const time = `<time datetime="${new Date(m.ts).toISOString()}">${fmtTime(m.ts)}</time>`;
     const copyBtn = m.text ? `<button type="button" class="act" data-copy-msg="${m.id}" title="${tr('复制')}" aria-label="${tr('复制')}">${ICONS.copy}</button>` : '';
     if (m.kind === 'review') return reviewNode(m, time, copyBtn);
-    // 你发的消息：靠右的气泡，和 Claude 桌面版一样
+    // 你发的消息：靠右的气泡，和 Claude 桌面版一样；附件排在气泡下面
     if (m.from === 'user') {
+      const atts = Array.isArray(m.attachments) && m.attachments.length ? attachCards(m.attachments) : '';
       return el(`<article class="msg user" data-id="${m.id}">
-        <div class="bubble md">${md(m.text)}</div>
+        ${m.text ? `<div class="bubble md">${md(m.text)}</div>` : ''}${atts}
         <div class="foot"><span class="acts">${copyBtn}</span>${time}</div></article>`);
     }
     // 成员的发言：上面一行是头像、名字和职责，下面是正文、出错信息、文件卡片、工作过程
@@ -1684,6 +1690,18 @@
     const retry = a && (m.status === 'error' || m.status === 'stopped') ? `<button type="button" class="btn small" data-poke="${a.id}">${esc(tr('让 {name} 再试一次', { name: a.name }))}</button>` : '';
     body.append(el(`<div class="foot"><span class="acts">${copyBtn}</span>${meta.join('')}${retry}</div>`));
     return node;
+  }
+
+  // 消息里的附件：点文件和文件卡片一样（能预览的在右侧面板预览，程序在文件夹中显示），点文件夹在文件面板里展开到它
+  function attachCards(list) {
+    return `<div class="msg-atts">${list
+      .map((a) => {
+        const tip = (a.from ? tr('复制自 {path}', { path: a.from }) + '\n' : '') + a.path;
+        const act = a.kind === 'dir' ? `data-dir-open="${esc(a.path)}"` : `data-file-open="${esc(a.path)}"`;
+        return `<button type="button" class="att-card" ${act} title="${esc(tip)}"><span class="att-ico k-${a.kind === 'dir' ? 'dir' : fileType(a.name).kind}">${attachIcon(a)}</span>
+          <span class="att-text"><span class="att-name">${esc(a.name)}</span><span class="att-meta">${esc(attachMeta(a))}</span></span></button>`;
+      })
+      .join('')}</div>`;
   }
 
   // 自动审查（「成员需要你确认时」选了自动执行）：审查模型代你答复了（正文就是答复，下面写理由），
@@ -1834,7 +1852,8 @@
       : last.status === 'error'
         ? `<p class="tl-reply bad" style="--c:${colorOf(last)}"><b>${esc(last.name)}</b>${esc(tr('运行出错：{error}', { error: plain(last.error || tr('未知错误')).slice(0, 140) }))}</p>`
         : `<p class="tl-reply" style="--c:${colorOf(last)}"><b>${esc(last.name)}</b>${esc(plain(last.text).slice(0, 160))}</p>`;
-    pop.innerHTML = `<b class="tl-title">${esc(plain(t.user.text).slice(0, 200))}</b>${reply}
+    const said = plain(t.user.text) || (t.user.attachments || []).map((a) => a.name).join(tr('、')); // 只发了附件的，写附件的名字
+    pop.innerHTML = `<b class="tl-title">${esc(said.slice(0, 200))}</b>${reply}
       <small class="tl-meta"><span>${chain.map((n) => esc(n)).join(' → ')}</span><span>${esc(fmtTime(t.user.ts))}</span></small>`;
     // 第一次出现时直接放到位置上；之后换刻度时卡片顺着滑过去
     const first = !pop.classList.contains('show');
@@ -2151,7 +2170,7 @@
     if (!btn) return;
     const st = S.state || {};
     const busy = (!!st.running || (st.queue || []).length > 0 || !!st.review) && !st.paused;
-    const has = !!getText().trim();
+    const has = !!getText().trim() || (S.attach[S.roomId] || []).some((a) => !a.pending); // 只有附件也能发
     const mode = !has && busy ? 'stop' : 'send';
     const sig = mode + (has ? '1' : '0');
     if (btn.dataset.sig === sig) return;
@@ -2383,10 +2402,17 @@
     const el = inputEl();
     if (!form || !el) return;
     setText(S.drafts[S.roomId] || '');
+    renderAttach();
     updateTo();
     form.addEventListener('submit', (e) => {
       e.preventDefault();
       send();
+    });
+    const plus = $('[data-attach]', form);
+    plus.addEventListener('mousedown', (e) => e.preventDefault()); // 不让输入框失去焦点
+    plus.addEventListener('click', (e) => {
+      e.stopPropagation();
+      attachMenu(plus);
     });
     $('#sendBtn').addEventListener('click', () => {
       if ($('#sendBtn').dataset.mode === 'stop') api('POST', `/api/rooms/${S.roomId}/stop`).catch((err) => toast(err.message, true));
@@ -2599,14 +2625,20 @@
   async function send() {
     const el = inputEl();
     const text = getText(el).trim();
-    if (!text || !S.roomId) return;
     const roomId = S.roomId;
+    if (!roomId) return;
+    const atts = attachList(roomId);
+    if (atts.some((a) => a.pending)) return toast(tr('附件还在添加，等一下再发'), true);
+    if (!text && !atts.length) return;
     el.innerHTML = '';
     S.drafts[roomId] = '';
+    S.attach[roomId] = [];
+    renderAttach();
     updateTo();
     closePop();
     try {
-      const msg = await api('POST', `/api/rooms/${roomId}/messages`, { text });
+      const attachments = atts.map(({ path, name, kind, size, count, from }) => ({ path, name, kind, size, count, from }));
+      const msg = await api('POST', `/api/rooms/${roomId}/messages`, { text, attachments });
       if (roomId === S.roomId) {
         addMessage(msg);
         scrollToBottom();
@@ -2614,9 +2646,215 @@
     } catch (e) {
       if (!getText(el).trim()) setText(text);
       S.drafts[roomId] = getText(el);
+      if (!attachList(roomId).length) S.attach[roomId] = atts;
+      if (roomId === S.roomId) renderAttach();
       toast(e.message, true);
     }
   }
+
+  // ---------- 附件：拖进对话区、或者点输入框左下角的「+」添加的文件和文件夹 ----------
+  // 桌面版拿得到文件在电脑上的位置，交给服务端：项目里的直接用，项目外的复制进 .agentchat/attachments（见 files.js 的 attach）；
+  // 拿不到位置的（浏览器里，或者从网页上拖来的图片）把内容传上去。还没发出去的附件跟着会话记着，去掉的话复制过来的那份也删掉
+  const MAX_UPLOAD = 200 * 1024 * 1024; // 和服务端的上限一样
+  let attachSeq = 0;
+  const attachList = (roomId = S.roomId) => S.attach[roomId] || (S.attach[roomId] = []);
+  const baseName = (p) => String(p).split(/[\\/]/).filter(Boolean).pop() || String(p);
+  // 附件下面那一小行：文件写大小；文件夹写「文件夹」，复制过来的再写有几个文件
+  const attachMeta = (a) =>
+    a.kind === 'dir' ? (a.count != null ? tr('文件夹 · {n} 个文件', { n: a.count }) : tr('文件夹')) : a.size != null ? fmtSize(a.size) : '';
+  const attachIcon = (a) => (a.kind === 'dir' ? ICONS.folder : FILE_ICON[fileType(a.name).kind] || FILE_ICON.other);
+
+  function renderAttach() {
+    const box = $('#attachList');
+    if (!box) return;
+    const list = attachList();
+    box.hidden = !list.length;
+    box.innerHTML = list
+      .map((a) => {
+        if (a.pending) return `<span class="att pending"><span class="att-ico"><i class="att-spin"></i></span><span class="att-name">${esc(a.name)}</span><span class="att-meta">${esc(tr('正在添加……'))}</span></span>`;
+        const tip = a.from || a.uploaded ? tr('项目外的文件，复制了一份放在 {path}', { path: a.path }) : a.path;
+        return `<span class="att" title="${esc(tip)}"><span class="att-ico k-${a.kind === 'dir' ? 'dir' : fileType(a.name).kind}">${attachIcon(a)}</span><span class="att-name">${esc(a.name)}</span>${
+          attachMeta(a) ? `<span class="att-meta">${esc(attachMeta(a))}</span>` : ''
+        }<button type="button" class="att-x" data-att-remove="${a.id}" title="${esc(tr('去掉'))}" aria-label="${esc(tr('去掉 {name}', { name: a.name }))}">${ICONS.close}</button></span>`;
+      })
+      .join('');
+    updateSendBtn();
+  }
+
+  // 先放一个「正在添加……」的占位，好了以后换成真的（重复添加的同一个文件只留一个）
+  function replacePending(roomId, ph, items) {
+    const list = attachList(roomId);
+    const i = list.indexOf(ph);
+    const fresh = items.filter((x) => !list.some((y) => y.path === x.path)).map((x) => ({ ...x, id: ++attachSeq }));
+    if (i >= 0) list.splice(i, 1, ...fresh);
+    if (roomId === S.roomId) renderAttach();
+  }
+
+  function pendingFor(roomId, names) {
+    const ph = { id: ++attachSeq, pending: true, name: names.length > 1 ? tr('{n} 项', { n: names.length }) : names[0] };
+    attachList(roomId).push(ph);
+    renderAttach();
+    return ph;
+  }
+
+  async function attachPaths(paths) {
+    const roomId = S.roomId;
+    if (!roomId || !paths.length) return;
+    const ph = pendingFor(roomId, paths.map(baseName));
+    try {
+      const { items } = await api('POST', `/api/rooms/${roomId}/attachments`, { paths });
+      replacePending(roomId, ph, items);
+    } catch (e) {
+      replacePending(roomId, ph, []);
+      toast(e.message, true);
+    }
+  }
+
+  // entries：[{ file, path }]，path 是相对路径（整个文件夹拖进来时，里面的文件带着文件夹名，比如 assets/logo.png）
+  async function attachUploads(entries) {
+    const roomId = S.roomId;
+    if (!roomId || !entries.length) return;
+    const tops = [...new Set(entries.map((x) => x.path.split('/')[0]))];
+    const ph = pendingFor(roomId, tops);
+    try {
+      const big = entries.find((x) => x.file.size > MAX_UPLOAD);
+      if (big) throw new Error(tr('「{name}」太大了，单个文件最多 {mb} MB', { name: big.file.name, mb: MAX_UPLOAD / 1024 / 1024 }));
+      let batch = 'new';
+      let base = '';
+      const sizes = {};
+      const counts = {};
+      for (const x of entries) {
+        const r = await upload(`/api/rooms/${roomId}/attachments/upload?batch=${encodeURIComponent(batch)}&path=${encodeURIComponent(x.path)}`, x.file);
+        batch = r.batch;
+        base = r.base;
+        const top = x.path.split('/')[0];
+        sizes[top] = (sizes[top] || 0) + r.size;
+        counts[top] = (counts[top] || 0) + 1;
+      }
+      const items = tops.map((top) => {
+        const dir = entries.some((x) => x.path.startsWith(top + '/'));
+        return { path: `${base}/${top}`, name: top, kind: dir ? 'dir' : 'file', size: sizes[top], ...(dir ? { count: counts[top] } : {}), uploaded: true };
+      });
+      replacePending(roomId, ph, items);
+    } catch (e) {
+      replacePending(roomId, ph, []);
+      toast(e.message, true);
+    }
+  }
+
+  // 上传一个文件：请求体就是文件内容
+  async function upload(url, file) {
+    const res = await fetch(url, { method: 'PUT', headers: { 'x-agent-chat': '1' }, body: file });
+    let data = {};
+    try {
+      data = await res.json();
+    } catch {}
+    if (!res.ok) throw new Error(data.error || tr('请求失败（{status}）', { status: res.status }));
+    return data;
+  }
+
+  // 去掉一个还没发出去的附件：复制或者传上来的那份删掉，项目里原有的文件不动
+  function removeAttach(id) {
+    const list = attachList();
+    const i = list.findIndex((a) => a.id === Number(id));
+    if (i < 0) return;
+    const [a] = list.splice(i, 1);
+    if (a.from || a.uploaded) api('DELETE', `/api/rooms/${S.roomId}/attachments?path=${encodeURIComponent(a.path)}`).catch(() => {});
+    renderAttach();
+    const input = inputEl();
+    if (input) input.focus();
+  }
+
+  // 「+」的菜单：Windows 上同一个选择框没法既选文件又选文件夹，分开两项
+  function attachMenu(anchor) {
+    openMenu(
+      anchor,
+      [
+        { label: tr('添加文件…'), icon: ICONS.read, run: () => pickAttach('file') },
+        { label: tr('添加文件夹…'), icon: ICONS.folder, run: () => pickAttach('folder') },
+      ],
+      { align: 'left' }
+    );
+  }
+
+  async function pickAttach(kind) {
+    if (desktop && desktop.pickFiles) {
+      const paths = await desktop.pickFiles(kind);
+      if (paths && paths.length) attachPaths(paths);
+      return;
+    }
+    // 浏览器里：用网页的文件选择框，选好以后把内容传上去
+    const input = el(`<input type="file" multiple hidden${kind === 'folder' ? ' webkitdirectory' : ''}>`);
+    input.addEventListener('change', () => {
+      const list = [...input.files].map((f) => ({ file: f, path: f.webkitRelativePath || f.name })).filter((x) => !/(^|\/)(node_modules|\.git)\//.test(x.path));
+      input.remove();
+      if (list.length) attachUploads(list);
+    });
+    document.body.append(input);
+    input.click();
+  }
+
+  // 拖进来的东西：桌面版拿到完整路径的交给服务端，拿不到的把内容传上去；浏览器里拖进来的文件夹要一层层读出里面的文件
+  async function onDropFiles(dt) {
+    const paths = [];
+    const uploads = [];
+    const dirs = [];
+    // webkitGetAsEntry 只能在 drop 事件里同步拿，过后就失效了
+    const got = [...(dt.items || [])].filter((it) => it.kind === 'file').map((it) => ({ file: it.getAsFile(), entry: it.webkitGetAsEntry ? it.webkitGetAsEntry() : null }));
+    for (const { file, entry } of got) {
+      const p = file && desktop && desktop.filePath ? desktop.filePath(file) : '';
+      if (p) paths.push(p);
+      else if (entry && entry.isDirectory) dirs.push(entry);
+      else if (file) uploads.push({ file, path: file.name });
+    }
+    if (paths.length) attachPaths(paths);
+    try {
+      for (const d of dirs) uploads.push(...(await readEntry(d, d.name)));
+    } catch (e) {
+      toast(e.message, true);
+    }
+    if (uploads.length) attachUploads(uploads);
+  }
+
+  // readEntries 一次最多给一百来个，要一直读到空为止；依赖和 .git 不要
+  async function readEntry(entry, prefix) {
+    if (entry.isFile) return [{ file: await new Promise((res, rej) => entry.file(res, rej)), path: prefix }];
+    const reader = entry.createReader();
+    const out = [];
+    for (;;) {
+      const part = await new Promise((res, rej) => reader.readEntries(res, rej));
+      if (!part.length) return out;
+      for (const e of part) {
+        if (e.isDirectory && (e.name === 'node_modules' || e.name === '.git')) continue;
+        out.push(...(await readEntry(e, `${prefix}/${e.name}`)));
+      }
+    }
+  }
+
+  // 拖文件进来：拖到对话区（中间一栏）的任何地方都行，盖上一层提示，松手就添加。
+  // 拖到别处松手什么也不做（不然桌面版会用默认程序打开这个文件，浏览器会跳到这个文件）
+  const dragHasFiles = (e) => !!e.dataTransfer && [...e.dataTransfer.types].includes('Files');
+  const inChat = (e) => !!(S.room && e.target instanceof Element && e.target.closest('#main'));
+  const showDrop = (on) => {
+    const z = $('#dropZone');
+    if (z) z.hidden = !on;
+  };
+  document.addEventListener('dragover', (e) => {
+    if (!dragHasFiles(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = inChat(e) ? 'copy' : 'none';
+    showDrop(inChat(e));
+  });
+  document.addEventListener('dragleave', (e) => {
+    // 离开窗口（relatedTarget 是空的），或者离开了中间一栏
+    if (dragHasFiles(e) && !(e.relatedTarget instanceof Element && e.relatedTarget.closest('#main'))) showDrop(false);
+  });
+  document.addEventListener('drop', (e) => {
+    if (!dragHasFiles(e)) return;
+    e.preventDefault();
+    showDrop(false);
+    if (inChat(e)) onDropFiles(e.dataTransfer);
+  });
 
   async function loadSkills(roomId, force) {
     try {
@@ -3886,7 +4124,7 @@
   // ---------- 点击 ----------
   document.addEventListener('click', async (e) => {
     const t = e.target.closest(
-      '[data-room],[data-new-project],[data-new-standalone],[data-add-member],[data-agent],[data-at],[data-refresh-env],[data-settings],[data-open-folder],[data-stop],[data-continue],[data-work],[data-poke],[data-example],[data-tb],[data-tb-panel],[data-pick],[data-file-open],[data-file-menu],[data-file-link],[data-files-more],[data-copy-msg],[data-copy-code],[data-acct],[data-acct-tools],[data-update],[data-to-pick],[data-proj-toggle],[data-new-chat],[data-proj-menu],[data-chat-menu],[data-members],[data-accept-vote],[data-accept-clean],#jump'
+      '[data-room],[data-new-project],[data-new-standalone],[data-add-member],[data-agent],[data-at],[data-refresh-env],[data-settings],[data-open-folder],[data-stop],[data-continue],[data-work],[data-poke],[data-example],[data-tb],[data-tb-panel],[data-pick],[data-file-open],[data-file-menu],[data-file-link],[data-files-more],[data-copy-msg],[data-copy-code],[data-acct],[data-acct-tools],[data-update],[data-to-pick],[data-proj-toggle],[data-new-chat],[data-proj-menu],[data-chat-menu],[data-members],[data-accept-vote],[data-accept-clean],[data-dir-open],[data-att-remove],#jump'
     );
     // 成员面板开着时，点到面板外面就收起
     if ($('#membersPop') && !e.target.closest('#membersPop') && !e.target.closest('[data-members]')) closeMembersPop();
@@ -3987,6 +4225,8 @@
         return;
       }
       if (d.fileOpen) return await openFileSmart(d.fileOpen);
+      if (d.dirOpen) return panel.showDir(d.dirOpen); // 消息里附上的文件夹
+      if (d.attRemove) return removeAttach(d.attRemove);
       if (d.fileMenu) return fileMenu(t, d.fileMenu);
       // 交付验收清单：「待你确认」的项点通过 / 不通过（再点一次取消）；「批准清理…」只把话放进输入框，不会删任何东西
       if (d.acceptVote || 'acceptClean' in d) {

@@ -129,6 +129,9 @@ function renderMsg(m, selfId, perMsg = 12000) {
   else who = m.name + (m.role ? `（${m.role}）` : '') + (m.from === selfId ? '（你之前的发言）' : '');
   let text = String(m.text || '').trim();
   if (text.length > perMsg) text = text.slice(0, perMsg) + '\n…（太长，已截断）';
+  // 用户附上的文件和文件夹：项目外的已经复制进项目文件夹了，都按这里的相对路径读
+  const atts = Array.isArray(m.attachments) ? m.attachments : [];
+  if (atts.length) text += `${text ? '\n' : ''}（附件，路径相对项目文件夹：${atts.map((a) => a.path + (a.kind === 'dir' ? '（文件夹）' : '')).join('、')}）`;
   if (m.status === 'error') text += `${text ? '\n' : ''}（这一轮运行出错：${oneLine(m.error, 300)}）`;
   if (m.status === 'stopped') text += `${text ? '\n' : ''}（这一轮被用户中止了）`;
   // 下面几行是系统按实际文件核对出来的（见 orchestrator.js 的 delivery），协议里告诉了成员以这个为准

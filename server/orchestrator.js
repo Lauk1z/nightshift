@@ -148,7 +148,8 @@ class Orchestrator {
     return [...new Set(ids)].filter((id) => id !== 'user' && id !== 'all' && id !== selfId);
   }
 
-  postUser(roomId, text) {
+  // attachments：这条消息带的附件（已经都在项目文件夹里，见 files.js 的 checkAttachments）
+  postUser(roomId, text, attachments = []) {
     const room = this.store.getRoom(roomId);
     if (!room) throw new Error(tr('会话不存在'));
     const r = this.rt(roomId);
@@ -159,7 +160,7 @@ class Orchestrator {
     if (!targets.length && waiting && room.agents.some((a) => a.id === waiting && a.enabled !== false)) targets = [waiting];
     if (!targets.length) targets = this.defaultTargets(room);
     const fresh = !this.isBusy(roomId);
-    const msg = this.store.addMessage(roomId, { from: 'user', name: '用户', kind: 'user', text });
+    const msg = this.store.addMessage(roomId, { from: 'user', name: '用户', kind: 'user', text, ...(attachments.length ? { attachments } : {}) });
     this.bus.send('message', { roomId, message: msg });
     if (fresh) {
       // 空闲时发的消息开始一次新任务，开始时的文件快照等第一位成员开始工作时再拍

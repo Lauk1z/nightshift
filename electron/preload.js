@@ -1,11 +1,20 @@
 'use strict';
 // 只给界面开放这几个功能，界面拿不到 Node 或文件系统
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('desktop', {
   platform: process.platform,
   webview: true, // 右侧面板的浏览器可以用 <webview>
   pickFolder: (start) => ipcRenderer.invoke('pick-folder', String(start || '')),
+  // 附件：选文件或文件夹（kind 是 'file' 或 'folder'，可以多选），返回完整路径；拖进来的文件在电脑上的位置
+  pickFiles: (kind) => ipcRenderer.invoke('pick-files', kind === 'folder' ? 'folder' : 'file'),
+  filePath: (file) => {
+    try {
+      return webUtils.getPathForFile(file) || '';
+    } catch {
+      return '';
+    }
+  },
   notify: (title, body) => ipcRenderer.invoke('notify', { title, body }),
   copy: (text) => ipcRenderer.invoke('copy', String(text || '')),
   paste: () => ipcRenderer.invoke('paste'),

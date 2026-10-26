@@ -279,6 +279,16 @@ ipcMain.handle('pick-folder', async (e, start) => {
   return r.canceled || !r.filePaths.length ? null : r.filePaths[0];
 });
 
+// 输入框左下角的「+」：添加文件或文件夹（Windows 上同一个对话框没法既选文件又选文件夹，分开两个）
+ipcMain.handle('pick-files', async (e, kind) => {
+  const folder = kind === 'folder';
+  const r = await dialog.showOpenDialog(win, {
+    title: folder ? tr('添加文件夹') : tr('添加文件'),
+    properties: [folder ? 'openDirectory' : 'openFile', 'multiSelections'],
+  });
+  return r.canceled ? [] : r.filePaths;
+});
+
 ipcMain.handle('copy', (e, text) => {
   clipboard.writeText(String(text || ''));
   return true;

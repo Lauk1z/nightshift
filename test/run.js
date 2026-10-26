@@ -1043,6 +1043,59 @@ test('项目外的文件：只认完整路径，不存在的不显示', () => {
   }
 });
 
+test('附件：项目里的直接用，项目外的复制进 .agentchat/attachments（跳过依赖），去掉时只删复制的那份', () => {
+  const { attach, removeAttachment, checkAttachments, uploadTarget } = require('../server/files');
+  const ws = tmp();
+  const out = tmp();
+  fs.mkdirSync(path.join(ws, 'docs'));
+  fs.writeFileSync(path.join(ws, 'docs', 'spec.md'), '# spec');
+  fs.writeFileSync(path.join(out, 'report.pdf'), 'pdf!');
+  fs.mkdirSync(path.join(out, 'assets', 'node_modules', 'x'), { recursive: true });
+  fs.writeFileSync(path.join(out, 'assets', 'logo.png'), 'png');
+  fs.writeFileSync(path.join(out, 'assets', 'node_modules', 'x', 'index.js'), 'x');
+  const items = attach(ws, [path.join(ws, 'docs', 'spec.md'), path.join(out, 'report.pdf'), path.join(out, 'assets'), path.join(ws, 'docs')]);
+  const T = /\d{8}-\d{6}(-\d+)?/;
+  assert.deepStrictEqual(
+    items.map((a) => [a.path.replace(T, 'T'), a.kind, a.size, a.count, a.from ? 'copy' : '']),
+    [
+      ['docs/spec.md', 'file', 6, undefined, ''],
+      ['.agentchat/attachments/T/report.pdf', 'file', 4, undefined, 'copy'],
+      ['.agentchat/attachments/T/assets', 'dir', 3, 1, 'copy'],
+      ['docs', 'dir', undefined, undefined, ''],
+    ]
+  );
+  assert.strictEqual(fs.readFileSync(path.join(ws, items[1].path), 'utf8'), 'pdf!');
+  assert.ok(!fs.existsSync(path.join(ws, items[2].path, 'node_modules')), '依赖不复制');
+  assert.strictEqual(fs.readFileSync(path.join(ws, '.agentchat', '.gitignore'), 'utf8'), '*\n', '不进 git');
+  // 同一个文件再加一次：新的一批，原样复制
+  assert.notStrictEqual(attach(ws, [path.join(out, 'report.pdf')])[0].path, items[1].path);
+  // 不能加：不存在的、项目文件夹本身、包含项目文件夹的文件夹。有一个不行就都不复制
+  const before = fs.readdirSync(path.join(ws, '.agentchat', 'attachments')).length;
+  assert.throws(() => attach(ws, [path.join(out, 'report.pdf'), path.join(out, 'nope.txt')]), /找不到「nope\.txt」/);
+  assert.strictEqual(fs.readdirSync(path.join(ws, '.agentchat', 'attachments')).length, before);
+  assert.throws(() => attach(ws, [ws]), /项目文件夹本身/);
+  assert.throws(() => attach(ws, [path.dirname(ws)]), /包含了项目文件夹/);
+  // 发消息时：只认项目里还在的；去掉附件时只删复制的那份，这一批空了连文件夹一起删
+  assert.strictEqual(checkAttachments(ws, items).length, 4);
+  assert.strictEqual(removeAttachment(ws, items[1].path), true);
+  assert.ok(!fs.existsSync(path.join(ws, items[1].path)));
+  assert.strictEqual(removeAttachment(ws, items[2].path), true);
+  assert.ok(!fs.existsSync(path.join(ws, path.dirname(items[2].path))), '空了的那一批也删掉');
+  assert.strictEqual(removeAttachment(ws, 'docs/spec.md'), false, '项目里原有的文件不动');
+  assert.ok(fs.existsSync(path.join(ws, 'docs', 'spec.md')));
+  assert.throws(() => checkAttachments(ws, [items[1]]), /找不到附件「report\.pdf」/);
+  // 浏览器传上来的：只能写在这一批的文件夹里
+  assert.ok(uploadTarget(ws, '20261026-101010', 'assets/logo.png').endsWith(path.join('20261026-101010', 'assets', 'logo.png')));
+  assert.strictEqual(uploadTarget(ws, '20261026-101010', '../../evil.txt'), null);
+  assert.strictEqual(uploadTarget(ws, '../x', 'a.txt'), null);
+});
+
+test('附件：成员看到的消息里写着每个附件的路径', () => {
+  const msgs = [{ seq: 1, from: 'user', kind: 'user', text: '看看这份需求', attachments: [{ path: 'docs/spec.md', kind: 'file' }, { path: '.agentchat/attachments/T/assets', kind: 'dir' }] }];
+  const p = buildCliPrompt({ room: fakeRoom(), agent: fakeRoom().agents[0], messages: msgs, fresh: true, trigger: null });
+  assert.match(p, /看看这份需求\n（附件，路径相对项目文件夹：docs\/spec\.md、\.agentchat\/attachments\/T\/assets（文件夹））/);
+});
+
 // ---- 每个成员单独的模型和思考强度 ----
 const models = require('../server/models');
 
@@ -1865,6 +1918,44 @@ test('设置和用量接口；换了语言，服务端的报错和 boot.js 跟�
     assert.strictEqual(onDisk('tests'), 'pass');
     assert.strictEqual((await vote('source', 'fail')).status, 400, '通过了的项不用点');
     assert.strictEqual((await vote('launch', 'pass', 'm_nope')).status, 404);
+    // 附件：桌面版按完整路径添加（项目里的直接用，项目外的复制）；浏览器把内容传上来，写进同一个地方；
+    // 发消息时带上，只有附件也能发，没起名字的会话用附件的名字起标题
+    const wsNow = (await call('GET', `/api/rooms/${rid}`)).json().room.workspace;
+    fs.writeFileSync(path.join(wsNow, 'spec.md'), '# spec');
+    const elsewhere2 = tmp();
+    fs.writeFileSync(path.join(elsewhere2, 'logo.png'), 'png');
+    const added = (await call('POST', `/api/rooms/${rid}/attachments`, { paths: [path.join(wsNow, 'spec.md'), path.join(elsewhere2, 'logo.png')] })).json().items;
+    assert.deepStrictEqual(
+      added.map((a) => [a.path.replace(/\d{8}-\d{6}(-\d+)?/, 'T'), a.kind, !!a.from]),
+      [
+        ['spec.md', 'file', false],
+        ['.agentchat/attachments/T/logo.png', 'file', true],
+      ]
+    );
+    assert.match((await call('POST', `/api/rooms/${rid}/attachments`, { paths: [path.join(elsewhere2, 'nope.txt')] })).json().error, /Can't find “nope\.txt”/);
+    const raw = (method, p, data) =>
+      new Promise((resolve, reject) => {
+        const req = http.request(srv.url + p, { method, headers: { 'x-agent-chat': '1' } }, (res) => {
+          let buf = '';
+          res.on('data', (c) => (buf += c));
+          res.on('end', () => resolve({ status: res.statusCode, json: () => JSON.parse(buf) }));
+        });
+        req.on('error', reject);
+        req.end(data);
+      });
+    const up = (await raw('PUT', `/api/rooms/${rid}/attachments/upload?batch=new&path=${encodeURIComponent('notes/todo.txt')}`, '买牛奶')).json();
+    assert.match(up.base, /^\.agentchat\/attachments\/\d{8}-\d{6}/);
+    assert.deepStrictEqual([up.path, up.size], [`${up.base}/notes/todo.txt`, Buffer.byteLength('买牛奶')]);
+    assert.strictEqual(fs.readFileSync(path.join(wsNow, up.path), 'utf8'), '买牛奶');
+    assert.strictEqual((await raw('PUT', `/api/rooms/${rid}/attachments/upload?batch=${up.batch}&path=${encodeURIComponent('../../x.txt')}`, 'x')).status, 400);
+    assert.strictEqual((await call('DELETE', `/api/rooms/${rid}/attachments?path=${encodeURIComponent(added[1].path)}`)).json().removed, true);
+    assert.ok(!fs.existsSync(path.join(wsNow, added[1].path)));
+    assert.strictEqual((await call('DELETE', `/api/rooms/${rid}/attachments?path=spec.md`)).json().removed, false);
+    assert.strictEqual((await call('POST', `/api/rooms/${rid}/messages`, { text: '', attachments: [added[1]] })).status, 400, '去掉了的附件不能再发');
+    const withAtt = (await call('POST', `/api/rooms/${rid}/messages`, { text: '', attachments: [added[0], { path: `${up.base}/notes`, name: 'notes', count: 1 }] })).json();
+    assert.deepStrictEqual(withAtt.attachments.map((a) => [a.path, a.kind]), [['spec.md', 'file'], [`${up.base}/notes`, 'dir']]);
+    assert.strictEqual((await call('GET', `/api/rooms/${rid}`)).json().room.name, 'spec.md notes');
+    assert.strictEqual((await call('POST', `/api/rooms/${rid}/messages`, { text: '  ' })).status, 400, '没字也没附件不能发');
     // 当审查模型的成员删掉了，就不再选它；专门的审查模型删掉了也一样
     await call('PATCH', `/api/rooms/${rid}`, { settings: { reviewer: ag.id } });
     await call('DELETE', `/api/rooms/${rid}/agents/${ag.id}`);
