@@ -6,7 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 const { killTree, childEnv, IS_WIN } = require('../proc');
-const { rel, outside, clip, addUsage } = require('./common');
+const { rel, outside, clip, addUsage, contextOf } = require('./common');
 // 给用户看的（状态、报错）跟着界面语言；工具说明和工具结果是给模型看的，保持中文
 const { t: tr } = require('../i18n');
 
@@ -364,6 +364,7 @@ module.exports = {
     return tr('API 模型');
   },
   stateless: true,
+  reportsContext: true,
   apiUsage,
   parseDsml,
   detect: async () => ({ installed: true }),
@@ -384,6 +385,7 @@ module.exports = {
       const tools = api.tools === false ? [] : toolDefs(ctx.permission);
       const messages = apiMessages.slice();
       const usage = [];
+      let context = null; // 最后一次调用的用量就是这一轮结束时上下文用了多少（每一轮都按聊天记录重新送一遍）
       emit({ type: 'status', text: tr('思考中') });
       try {
         for (let step = 0; step < 40; step++) {
@@ -397,19 +399,22 @@ module.exports = {
           if (tools.length) body.tools = tools;
           emit({ type: 'text_start' });
           const r = await chat({ url, key: api.apiKey, body, signal: ac.signal, emit });
-          if (r.usage) addUsage(usage, agent.model, r.usage);
+          if (r.usage) {
+            addUsage(usage, agent.model, r.usage);
+            context = contextOf(agent.model, r.usage) || context;
+          }
           // 工具调用写成了 DSML 文字：解析出来照样执行；看不懂的报错，不能当成已经回答了
           const dsml = parseDsml(r.content);
           if (dsml.found) {
             r.content = dsml.text;
             if (!r.calls.length) {
               if (!dsml.calls.length) {
-                return { text: dsml.text, error: tr('模型把工具调用写成了文字（DeepSeek 的 DSML 格式），但内容不完整，这一轮没有执行任何操作。'), model: agent.model, usage };
+                return { text: dsml.text, error: tr('模型把工具调用写成了文字（DeepSeek 的 DSML 格式），但内容不完整，这一轮没有执行任何操作。'), model: agent.model, usage, context };
               }
               r.calls = dsml.calls.map((c) => ({ id: '', name: c.name, args: JSON.stringify(c.args) }));
             }
           }
-          if (!r.calls.length) return { text: r.content, model: agent.model, usage };
+          if (!r.calls.length) return { text: r.content, model: agent.model, usage, context };
           if (r.content.trim()) emit({ type: 'text', text: r.content });
           const assistant = {
             role: 'assistant',
@@ -445,10 +450,10 @@ module.exports = {
             messages.push({ role: 'tool', tool_call_id: tc.id, content: String(out) });
           }
         }
-        return { error: tr('工具调用次数太多（超过 40 轮），已停止'), usage };
+        return { error: tr('工具调用次数太多（超过 40 轮），已停止'), usage, context };
       } catch (e) {
-        if (ac.signal.aborted) return { error: tr('已中止'), usage };
-        return { error: e.message || String(e), usage };
+        if (ac.signal.aborted) return { error: tr('已中止'), usage, context };
+        return { error: e.message || String(e), usage, context };
       }
     })();
 

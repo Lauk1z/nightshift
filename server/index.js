@@ -102,6 +102,7 @@ function publicRoom(room) {
     updatedAt: room.updatedAt,
     agents: room.agents.map(publicAgent),
     sessions: Object.fromEntries(Object.keys(room.sessions || {}).map((k) => [k, true])),
+    context: room.context || {}, // 每个成员的上下文用了多少（右侧面板的「上下文」）
     logPath: store.logPath(room),
   };
 }
@@ -476,6 +477,7 @@ function moveProject(project, ws) {
     room.workspace = ws;
     room.sessions = {};
     room.lastSeen = {};
+    room.context = {};
     room.sideSessions = {};
     room.sideSeen = {};
     store.saveRoom(room);
@@ -715,6 +717,7 @@ route('PATCH', '/api/rooms/:id/agents/:aid', async (req, { params, body }) => {
     // 换了接入方式，或者改了 DeepSeek Harness 建会话时就定下的设置：旧会话没法续用
     delete room.sessions[prev.id];
     delete room.lastSeen[prev.id];
+    delete room.context[prev.id];
     delete room.sideSessions[prev.id];
     delete room.sideSeen[prev.id];
   }
@@ -732,6 +735,7 @@ route('DELETE', '/api/rooms/:id/agents/:aid', async (req, { params }) => {
   room.agents = room.agents.filter((a) => a.id !== params.aid);
   delete room.sessions[params.aid];
   delete room.lastSeen[params.aid];
+  delete room.context[params.aid];
   delete room.sideSessions[params.aid];
   delete room.sideSeen[params.aid];
   if (room.settings.defaultAgent === params.aid) room.settings.defaultAgent = '';
@@ -746,6 +750,7 @@ route('POST', '/api/rooms/:id/agents/:aid/reset', async (req, { params }) => {
   const room = needRoom(params.id);
   delete room.sessions[params.aid];
   delete room.lastSeen[params.aid];
+  delete room.context[params.aid];
   store.saveRoom(room);
   bus.send('room', publicRoom(room));
   return { ok: true };
@@ -901,6 +906,7 @@ route('POST', '/api/rooms/:id/clear', async (req, { params }) => {
   store.clearMessages(room.id);
   room.sessions = {};
   room.lastSeen = {};
+  room.context = {};
   store.saveRoom(room);
   bus.send('cleared', { roomId: room.id });
   bus.send('room', publicRoom(room));

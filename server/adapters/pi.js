@@ -3,7 +3,7 @@
 // 第一行是会话头 {"type":"session","id":…}，下次用 --session <id> 续上。
 // pi 没有权限系统，权限靠 --tools 限定能用的工具：只读给 read,grep,find,ls；可改文件再加 edit,write；完全权限用默认工具（含 bash）。
 const { runJsonl, runCapture, killTree, detectCli, splitArgs } = require('../proc');
-const { rel, outside, clip, tail, makeProbe, addUsage, readableError, segmenter } = require('./common');
+const { rel, outside, clip, tail, makeProbe, addUsage, contextOf, readableError, segmenter } = require('./common');
 const { t: tr } = require('../i18n');
 
 const TOOLS = { readonly: 'read,grep,find,ls', edit: 'read,grep,find,ls,edit,write', full: '' };
@@ -43,7 +43,7 @@ function toolItem(j, cwd) {
   return { id: j.toolCallId, k, n: j.toolName || 'tool', d: clip(d, 400), s: 'running', ...outside(k, i.path || i.file_path, cwd) };
 }
 
-// 每条回复的 message 里有它自己的用量和模型（provider/model）
+// 每条回复的 message 里有它自己的用量和模型（provider/model）。最后一条回复的用量就是这一轮结束时上下文用了多少
 function piUsage(list, m, fallbackModel) {
   const u = m && m.usage;
   if (!u) return list;
@@ -64,6 +64,7 @@ module.exports = {
   buildArgs,
   probe,
   piUsage,
+  reportsContext: true,
   async detect(force) {
     const base = await detectCli('pi');
     if (!base.installed) return base;
@@ -78,6 +79,7 @@ module.exports = {
     let finalText = '';
     let failure = null;
     const usage = [];
+    let last = null; // 最后一条回复的用量（上下文）
     const seg = segmenter(emit);
 
     const onJson = (j) => {
@@ -105,6 +107,7 @@ module.exports = {
           seg.close();
           piUsage(usage, m, model);
           if (m.model) model = m.provider ? `${m.provider}/${m.model}` : m.model;
+          if (m.usage) last = contextOf(model, m.usage);
           const t = textOf(m);
           if (t.trim()) finalText = t;
           // 接口报错时进程照样以 0 退出，错误写在这条回复里；之后自动重试成功了就不算
@@ -138,14 +141,15 @@ module.exports = {
       const { code, error, stderr } = await r.done;
       seg.close();
       const text = finalText || seg.last;
-      if (error) return { error: error.message, sessionId: sid, stderr, usage };
-      if (failure) return { text, error: failure, sessionId: sid, model, stderr, usage };
+      const context = last;
+      if (error) return { error: error.message, sessionId: sid, stderr, usage, context };
+      if (failure) return { text, error: failure, sessionId: sid, model, stderr, usage, context };
       if (code !== 0 && !text) {
         const why = /no api key|no models available|\/login/i.test(stderr) ? tr('pi 还没有能用的模型：在命令行里运行 pi，用 /login 登录，或者设置对应的 API Key。') : '';
         const err = [why, tail(stderr)].filter(Boolean).join('\n') || tr('{cmd} 意外退出（退出码 {code}）', { cmd: 'pi', code });
-        return { error: err, sessionId: sid, stderr, usage };
+        return { error: err, sessionId: sid, stderr, usage, context };
       }
-      return { text, error: null, sessionId: sid, model, stderr, usage };
+      return { text, error: null, sessionId: sid, model, stderr, usage, context };
     })().catch((e) => ({ error: e.message || String(e), sessionId: sid }));
 
     return {

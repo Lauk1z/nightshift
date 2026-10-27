@@ -1,17 +1,19 @@
 'use strict';
 // Claude Code：claude -p --output-format stream-json，prompt 走 stdin，用 --resume 续上会话。
+// 新版的 prompt 也写成 stream-json（--input-format），这一轮做完以后再问它上下文的分类用量（get_context_usage），然后关掉 stdin。
 // 不同版本支持的参数不一样（比如旧版没有 --effort），所以先读一次 claude --help，只传当前版本认识的参数。
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { runJsonl, runCapture, killTree, detectCli, splitArgs } = require('../proc');
-const { rel, outside, clip, tail, optionBlock, makeProbe, addUsage } = require('./common');
+const { rel, outside, clip, tail, optionBlock, makeProbe, addUsage, contextOf } = require('./common');
 const { t: tr } = require('../i18n');
 
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
+const CTX_REQUEST = 'agent-chat-context';
 
 // 读不到 --help 时按新版处理
-const MODERN = { known: false, effort: true, efforts: EFFORTS, partial: true, settings: true, modes: [], aliases: [] };
+const MODERN = { known: false, effort: true, efforts: EFFORTS, partial: true, settings: true, streamInput: true, modes: [], aliases: [] };
 
 function parseHelp(help) {
   const text = String(help || '');
@@ -27,6 +29,7 @@ function parseHelp(help) {
       .filter((s) => /^[a-z]+$/.test(s)),
     partial: /--include-partial-messages\b/.test(text),
     settings: /--settings\b/.test(text),
+    streamInput: /--input-format\b/.test(text),
     modes: [...optionBlock(text, '--permission-mode').matchAll(/"(\w+)"/g)].map((m) => m[1]),
     aliases: [...optionBlock(text, '--model').matchAll(/'([a-z][a-z0-9-]*)'/g)].map((m) => m[1]),
   };
@@ -65,7 +68,7 @@ function effortSettingsFile(level) {
 
 function buildArgs({ agent, sessionId, caps = MODERN }) {
   const c = { ...MODERN, ...caps };
-  const args = ['-p', '--output-format', 'stream-json', '--verbose'];
+  const args = ['-p', ...(c.streamInput ? ['--input-format', 'stream-json'] : []), '--output-format', 'stream-json', '--verbose'];
   if (c.partial) args.push('--include-partial-messages');
   args.push(...permArgs(agent.permission, c));
   if (agent.model) args.push('--model', agent.model);
@@ -96,6 +99,29 @@ function claudeUsage(result, perMessage, model) {
   return out;
 }
 
+// 上下文：这一轮结束时 Claude Code 自己算的（info，get_context_usage 的回答，按系统提示、工具、技能、消息……分好）；
+// 问不到（旧版、没回答）就用最后一次调用模型的用量，上下文窗口看 result 的 modelUsage
+const KINDS = ['used', 'buffer', 'free', 'deferred'];
+function claudeContext(info, last, result, model) {
+  if (info && Array.isArray(info.categories) && Number(info.maxTokens) > 0) {
+    const parts = info.categories
+      .filter((c) => c && c.name && Number(c.tokens) >= 0)
+      .slice(0, 24)
+      .map((c) => ({
+        id: String(c.id || '').slice(0, 60),
+        name: String(c.name).slice(0, 60),
+        tokens: Math.round(Number(c.tokens)),
+        kind: c.isDeferred ? 'deferred' : KINDS.includes(c.kind) ? c.kind : 'used',
+      }));
+    return { used: Math.round(Number(info.totalTokens)) || 0, window: Math.round(Number(info.maxTokens)), model: String(info.model || model || ''), parts };
+  }
+  if (!last) return null;
+  const u = last.usage || {};
+  const m = last.model || model;
+  const mu = result && result.modelUsage && typeof result.modelUsage === 'object' ? result.modelUsage[m] || Object.values(result.modelUsage)[0] : null;
+  return contextOf(m, { input: u.input_tokens, output: u.output_tokens, cacheRead: u.cache_read_input_tokens, cacheWrite: u.cache_creation_input_tokens }, mu && mu.contextWindow);
+}
+
 function toolItem(b, cwd) {
   const n = b.name || 'tool';
   const i = b.input || {};
@@ -122,6 +148,8 @@ module.exports = {
   probe,
   buildArgs,
   claudeUsage,
+  claudeContext,
+  reportsContext: true,
   async detect(force) {
     const base = await detectCli('claude');
     if (base.installed) await probe(force);
@@ -135,10 +163,39 @@ module.exports = {
     let model = '';
     let lastText = '';
     const perMessage = new Map(); // 每条回复的用量（同一条回复会出现好几次，按 id 只记最后一次）
+    let last = null; // 最后一条（不是子代理的）回复的用量：问不到上下文的分类用量时，按它算上下文
+    let ctxInfo = null;
+    let stdinOpen = false;
+    let askTimer = null;
+    const closeInput = () => {
+      clearTimeout(askTimer);
+      if (!stdinOpen) return;
+      stdinOpen = false;
+      try {
+        child.stdin.end();
+      } catch {}
+    };
+    // 这一轮做完了：问它上下文的分类用量，回答了（或者等了 5 秒还没回答）就关掉 stdin，它就退出了
+    const askContext = () => {
+      if (!stdinOpen) return;
+      try {
+        child.stdin.write(JSON.stringify({ type: 'control_request', request_id: CTX_REQUEST, request: { subtype: 'get_context_usage', detail: 'summary' } }) + '\n');
+      } catch {
+        return closeInput();
+      }
+      askTimer = setTimeout(closeInput, 5000);
+    };
 
     const onJson = (j) => {
       if (j.type === 'assistant' && j.message && j.message.id && j.message.usage) {
         perMessage.set(j.message.id, { model: j.message.model, usage: j.message.usage });
+        if (!j.parent_tool_use_id) last = { model: j.message.model, usage: j.message.usage };
+      }
+      if (j.type === 'control_response') {
+        const r = j.response || {};
+        if (r.request_id !== CTX_REQUEST) return;
+        if (r.subtype === 'success') ctxInfo = r.response;
+        return closeInput();
       }
       if (j.parent_tool_use_id) return; // 子代理内部的消息不展示（用量上面已经记了）
       switch (j.type) {
@@ -180,6 +237,7 @@ module.exports = {
           break;
         case 'result':
           result = j;
+          askContext();
           break;
       }
     };
@@ -188,11 +246,16 @@ module.exports = {
       const caps = await probe();
       if (cancelled) return { error: tr('已中止'), sessionId: sid };
       const args = buildArgs({ agent, sessionId, caps });
-      const r = runJsonl({ cmd: 'claude', args, cwd, input: prompt, onJson });
+      const stream = { ...MODERN, ...caps }.streamInput;
+      const input = stream ? JSON.stringify({ type: 'user', message: { role: 'user', content: prompt } }) + '\n' : prompt;
+      const r = runJsonl({ cmd: 'claude', args, cwd, input, onJson, keepOpen: stream });
       child = r.child;
+      stdinOpen = stream;
       const { code, error, stderr } = await r.done;
+      clearTimeout(askTimer);
       const usage = claudeUsage(result, perMessage, model);
-      if (error) return { error: error.message, sessionId: sid, stderr, usage };
+      const context = claudeContext(ctxInfo, last, result, model);
+      if (error) return { error: error.message, sessionId: sid, stderr, usage, context };
       if (result) {
         const failed = result.is_error || (result.subtype && result.subtype !== 'success');
         return {
@@ -202,6 +265,7 @@ module.exports = {
           model,
           stderr,
           usage,
+          context,
         };
       }
       return {
@@ -211,6 +275,7 @@ module.exports = {
         model,
         stderr,
         usage,
+        context,
       };
     })().catch((e) => ({ error: e.message || String(e), sessionId: sid }));
 

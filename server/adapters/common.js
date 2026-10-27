@@ -93,6 +93,14 @@ function addUsage(list, model, u) {
   return list;
 }
 
+// 上下文用了多少（右侧面板的「上下文」）：最后一次调用模型时送进去的（含命中缓存的部分）加上这次的回复，
+// 下一轮都还在上下文里。u 的写法和 addUsage 一样；window 是模型的上下文窗口，不知道就是 0（之后按模型目录补）
+function contextOf(model, u, window = 0) {
+  if (!u) return null;
+  const used = tok(u.input) + tok(u.cacheRead) + tok(u.cacheWrite) + tok(u.output);
+  return used ? { used, window: tok(window), model: String(model || '') } : null;
+}
+
 // 接口报错常常是一层套一层的 JSON 字符串（Gemini、pi 都会这样），取出最里面给人看的那句话；
 // 开头有 HTTP 状态码的（401 {...}）把状态码留着
 function readableError(msg) {
@@ -140,4 +148,4 @@ function segmenter(emit) {
 const RESUME_FAIL =
   /no conversation found|session.{0,40}not found|could not find session|couldn't find session|no session (found|matching|with)|session.{0,40}(does not|doesn't) exist|no rollout found|thread.{0,40}not found|unknown session|failed to resume|cannot resume|invalid session|omit --session-id/i;
 
-module.exports = { rel, outside, clip, prettyCmd, tail, optionBlock, makeProbe, addUsage, readableError, segmenter, RESUME_FAIL };
+module.exports = { rel, outside, clip, prettyCmd, tail, optionBlock, makeProbe, addUsage, contextOf, readableError, segmenter, RESUME_FAIL };

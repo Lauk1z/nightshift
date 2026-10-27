@@ -1,5 +1,8 @@
 'use strict';
 // OpenAI Codex：codex exec --json，prompt 走 stdin（参数 "-"），用 codex exec resume <id> 续上会话。
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const { runJsonl, runCapture, killTree, detectCli, splitArgs } = require('../proc');
 const { rel, outside, clip, prettyCmd, tail, makeProbe, addUsage } = require('./common');
 const { t: tr } = require('../i18n');
@@ -9,6 +12,85 @@ function codexUsage(u) {
   const inTok = Number(u.input_tokens) || 0;
   const cached = Math.min(inTok, Number(u.cached_input_tokens) || 0);
   return { input: inTok - cached, cacheRead: cached, cacheWrite: u.cache_write_input_tokens, output: u.output_tokens };
+}
+
+// 上下文（右侧面板）：exec --json 只给这一轮加起来的用量。最后一次调用模型时的用量和上下文窗口记在 Codex 自己的会话记录里：
+// <CODEX_HOME>/sessions/年/月/日/rollout-<时间>-<会话 id>.jsonl 的 token_count 事件，跑完以后读一下文件末尾（只读，不改）
+const rollouts = new Map(); // 会话 id → 记录文件
+function findRollout(id, home) {
+  const known = rollouts.get(id);
+  if (known && fs.existsSync(known)) return known;
+  const root = path.join(home, 'sessions');
+  const dirs = (p) => {
+    try {
+      return fs
+        .readdirSync(p, { withFileTypes: true })
+        .filter((d) => d.isDirectory())
+        .map((d) => path.join(p, d.name))
+        .sort()
+        .reverse();
+    } catch {
+      return [];
+    }
+  };
+  // 新的在前：续上的会话还记在它开始那天的文件夹里，所以一天天往前找
+  const days = dirs(root).flatMap((y) => dirs(y).flatMap(dirs)).slice(0, 1000);
+  for (const dir of days) {
+    let names = [];
+    try {
+      names = fs.readdirSync(dir);
+    } catch {}
+    const hit = names.find((n) => n.endsWith('.jsonl') && n.includes(id));
+    if (hit) {
+      rollouts.set(id, path.join(dir, hit));
+      return path.join(dir, hit);
+    }
+  }
+  return null;
+}
+
+// 从文件末尾往前找最后一个 token_count（还有最后用的模型，记在 turn_context 里）
+function lastTokenCount(file) {
+  let fd;
+  try {
+    fd = fs.openSync(file, 'r');
+    const size = fs.fstatSync(fd).size;
+    const len = Math.min(size, 1024 * 1024);
+    const buf = Buffer.alloc(len);
+    fs.readSync(fd, buf, 0, len, size - len);
+    let info = null;
+    let model = '';
+    const lines = buf.toString('utf8').split('\n');
+    for (let i = lines.length - 1; i >= 0 && !(info && model); i--) {
+      const l = lines[i];
+      if (!(info ? l.includes('"turn_context"') : l.includes('"token_count"') || l.includes('"turn_context"'))) continue;
+      try {
+        const j = JSON.parse(l);
+        const p = j.payload || {};
+        if (!info && p.type === 'token_count' && p.info && p.info.last_token_usage) info = p.info;
+        else if (!model && j.type === 'turn_context' && p.model) model = String(p.model);
+      } catch {}
+    }
+    return info ? { info, model } : null;
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd);
+      } catch {}
+    }
+  }
+}
+
+function codexContext(id, model = '', home = process.env.CODEX_HOME || path.join(os.homedir(), '.codex')) {
+  const file = id && findRollout(id, home);
+  const hit = file && lastTokenCount(file);
+  if (!hit) return null;
+  const u = hit.info.last_token_usage;
+  const used = Number(u.total_tokens) || (Number(u.input_tokens) || 0) + (Number(u.output_tokens) || 0);
+  if (!(used > 0)) return null;
+  return { used: Math.round(used), window: Math.round(Number(hit.info.model_context_window) || 0), model: model || hit.model };
 }
 
 // 旧版 Codex 没有 exec --json，事件格式也不一样，没法接入，直接提示升级
@@ -61,6 +143,8 @@ module.exports = {
   buildArgs,
   probe,
   codexUsage,
+  codexContext,
+  reportsContext: true,
   async detect(force) {
     const base = await detectCli('codex');
     if (!base.installed) return base;
@@ -154,12 +238,13 @@ module.exports = {
       const r = runJsonl({ cmd: 'codex', args: buildArgs({ agent, cwd, sessionId }), cwd, input: prompt, onJson });
       child = r.child;
       const { code, error, stderr } = await r.done;
-      if (error) return { error: error.message, sessionId: sid, stderr, usage };
-      if (failure) return { text: lastText, error: failure, sessionId: sid, stderr, usage };
+      const contextFetch = async () => (sid ? codexContext(sid, agent.model || '') : null);
+      if (error) return { error: error.message, sessionId: sid, stderr, usage, contextFetch };
+      if (failure) return { text: lastText, error: failure, sessionId: sid, stderr, usage, contextFetch };
       if (!completed && code !== 0) {
-        return { text: lastText, error: tail(stderr) || tr('{cmd} 意外退出（退出码 {code}）', { cmd: 'codex', code }), sessionId: sid, stderr, usage };
+        return { text: lastText, error: tail(stderr) || tr('{cmd} 意外退出（退出码 {code}）', { cmd: 'codex', code }), sessionId: sid, stderr, usage, contextFetch };
       }
-      return { text: lastText, error: null, sessionId: sid, model: agent.model || '', stderr, warnings, usage };
+      return { text: lastText, error: null, sessionId: sid, model: agent.model || '', stderr, warnings, usage, contextFetch };
     })().catch((e) => ({ error: e.message || String(e), sessionId: sid }));
 
     return {

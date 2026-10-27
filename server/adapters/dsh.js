@@ -10,7 +10,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { runJsonl, runCapture, killTree, detectCli, splitArgs } = require('../proc');
-const { rel, outside, clip, tail, makeProbe, addUsage, readableError, segmenter } = require('./common');
+const { rel, outside, clip, tail, makeProbe, addUsage, contextOf, readableError, segmenter } = require('./common');
 const { t: tr } = require('../i18n');
 
 // 只读 / 可改文件 / 完全权限，对应 dsh 的三种文件沙箱
@@ -106,6 +106,7 @@ module.exports = {
   patchText,
   dshUsage,
   probe,
+  reportsContext: true,
   async detect(force) {
     const base = await detectCli('dsh');
     if (!base.installed) return base;
@@ -121,6 +122,7 @@ module.exports = {
     let failure = null;
     let code = '';
     const usage = [];
+    let context = null; // 最后一步的用量就是这一轮结束时上下文用了多少
     const seg = segmenter(emit);
     let blockText = false; // 这一段里已经有一块文字了，下一块前面空一行
 
@@ -134,7 +136,11 @@ module.exports = {
           break;
         case 'status':
           if (j.phase === 'turn_start' || j.phase === 'step_start') emit({ type: 'status', text: tr('思考中') });
-          else if (j.phase === 'step_end') dshUsage(usage, j.usage, model);
+          else if (j.phase === 'step_end') {
+            dshUsage(usage, j.usage, model);
+            const u = j.usage || {};
+            context = contextOf(model, { input: u.inputTokens, output: u.outputTokens, cacheRead: u.cacheReadTokens, cacheWrite: u.cacheWriteTokens }) || context;
+          }
           else if (j.phase === 'turn_end') {
             const r = j.reason || {};
             if (r.kind && r.kind !== 'completed') {
@@ -183,11 +189,11 @@ module.exports = {
         const { code: exit, error, stderr } = await r.done;
         seg.close();
         const text = finalText || seg.last;
-        if (error) return { error: error.message, sessionId: sid, stderr, usage };
-        if (code === 'MISSING_CREDENTIAL' || /MISSING_CREDENTIAL/.test(stderr)) return { text, error: NO_KEY(), sessionId: sid, stderr, usage };
-        if (failure) return { text, error: failure, sessionId: sid, model, stderr, usage };
-        if (exit !== 0 && !text) return { error: tail(stderr) || tr('{cmd} 意外退出（退出码 {code}）', { cmd: 'dsh', code: exit }), sessionId: sid, stderr, usage };
-        return { text, error: null, sessionId: sid, model, stderr, usage };
+        if (error) return { error: error.message, sessionId: sid, stderr, usage, context };
+        if (code === 'MISSING_CREDENTIAL' || /MISSING_CREDENTIAL/.test(stderr)) return { text, error: NO_KEY(), sessionId: sid, stderr, usage, context };
+        if (failure) return { text, error: failure, sessionId: sid, model, stderr, usage, context };
+        if (exit !== 0 && !text) return { error: tail(stderr) || tr('{cmd} 意外退出（退出码 {code}）', { cmd: 'dsh', code: exit }), sessionId: sid, stderr, usage, context };
+        return { text, error: null, sessionId: sid, model, stderr, usage, context };
       } finally {
         if (patchFile) fs.rm(patchFile, { force: true }, () => {});
       }

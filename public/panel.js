@@ -1,5 +1,5 @@
 'use strict';
-// 右侧面板：文件、侧边对话、终端、浏览器 —— 像 Claude、Codex 桌面版那样从右边展开。
+// 右侧面板：文件、侧边对话、终端、浏览器、上下文 —— 像 Claude、Codex 桌面版那样从右边展开。
 // app.js 调用 createPanel(ctx) 创建，ctx 里是 app.js 的状态和工具函数。
 window.createPanel = function createPanel(ctx) {
   const {
@@ -38,6 +38,7 @@ window.createPanel = function createPanel(ctx) {
     ['side', tr('侧边对话'), 'chat'],
     ['term', tr('终端'), 'terminal'],
     ['browser', tr('浏览器'), 'web'],
+    ['context', tr('上下文'), 'context'],
   ];
   const MIN_W = 320;
   const saved = (() => {
@@ -66,7 +67,7 @@ window.createPanel = function createPanel(ctx) {
       <div class="panel-tabs" role="tablist" aria-label="${tr('右侧面板')}">
         ${TABS.map(
           ([id, label, icon]) =>
-            `<button type="button" role="tab" class="ptab" data-ptab="${id}" aria-selected="false">${ICONS[icon]}<span>${label}</span></button>`
+            `<button type="button" role="tab" class="ptab" data-ptab="${id}" aria-selected="false" title="${label}" aria-label="${label}">${ICONS[icon]}<span>${label}</span></button>`
         ).join('')}
         <span class="grow"></span>
         <button type="button" class="icon-btn" data-panel-close title="${tr('关闭面板')}" aria-label="${tr('关闭面板')}">${ICONS.close}</button>
@@ -83,6 +84,7 @@ window.createPanel = function createPanel(ctx) {
     SIDE.mount();
     TERM.mount();
     BROWSER.mount();
+    CONTEXT.mount();
     window.addEventListener('resize', () => {
       applyWidth();
       TERM.fit();
@@ -95,6 +97,15 @@ window.createPanel = function createPanel(ctx) {
   function applyWidth() {
     const max = Math.max(MIN_W, window.innerWidth - 460);
     root.style.width = Math.min(P.width, max) + 'px';
+    fitTabs();
+  }
+
+  // 标签一排放不下（面板拖窄了、英文的标签长）：没选中的只留图标，名字在鼠标提示里
+  function fitTabs() {
+    const bar = root.querySelector('.panel-tabs');
+    if (!bar || root.hidden) return;
+    bar.classList.remove('compact');
+    if (bar.scrollWidth > bar.clientWidth + 1) bar.classList.add('compact');
   }
 
   // 焦点留在看不见的地方（比如收起的终端）时，打的字会跑进去：挪回群聊输入框
@@ -113,13 +124,14 @@ window.createPanel = function createPanel(ctx) {
     $('#app').classList.toggle('panel-open', P.open);
     applyWidth();
     for (const b of root.querySelectorAll('[data-ptab]')) b.setAttribute('aria-selected', String(b.dataset.ptab === P.tab));
+    fitTabs(); // 选中的标签变了，带名字的那个也变了
     for (const v of root.querySelectorAll('[data-pview]')) v.classList.toggle('active', v.dataset.pview === P.tab);
     rescueFocus();
     if (onChange) onChange(P);
   }
 
   function activate() {
-    const V = { files: FILES, side: SIDE, term: TERM, browser: BROWSER }[P.tab];
+    const V = { files: FILES, side: SIDE, term: TERM, browser: BROWSER, context: CONTEXT }[P.tab];
     V.activate();
   }
 
@@ -922,6 +934,159 @@ window.createPanel = function createPanel(ctx) {
   })();
 
   // =====================================================================
+  // 上下文：每个成员在这个会话里的上下文用了多少（按它最近一轮结束时算），像 Claude 桌面版的「上下文」。
+  // Claude Code 自己按类别分好（消息、系统工具、MCP 工具、系统提示、技能……），别的工具只有一个总数。
+  // 数据在 S.room.context，服务端每轮结束后推过来（见 orchestrator.js 的 noteContext）
+  // =====================================================================
+  const CONTEXT = (() => {
+    const FOLD = 'agentchat.ctx.folded'; // 收起来的成员（只看总数和条）
+    const folded = new Set(
+      (() => {
+        try {
+          const v = JSON.parse(local.get(FOLD) || '[]');
+          return Array.isArray(v) ? v : [];
+        } catch {
+          return [];
+        }
+      })()
+    );
+    // Claude Code 的类别：颜色跟着类别走（--ctx-1 到 --ctx-8，前几个和 Claude 桌面版一样），条上也按这个顺序排。
+    // 不认识的类别用它原来的名字、中性色
+    const CATS = [
+      ['messages', tr('上下文::消息')],
+      ['system_tools', tr('系统工具')],
+      ['mcp_tools', tr('MCP 工具')],
+      ['system_prompt', tr('系统提示')],
+      ['skills', tr('上下文::技能')],
+      ['memory_files', tr('记忆文件')],
+      ['custom_agents', tr('自定义代理')],
+      ['mcp_instructions', tr('MCP 服务器说明')],
+    ];
+    const BUFFERS = { autocompact_buffer: tr('自动压缩预留'), compact_buffer: tr('压缩预留') };
+    // 273.2k、1M 这样（和 Claude 桌面版一样，一位小数，.0 不写）
+    const fmtTok = (n) => {
+      n = Math.max(0, Math.round(Number(n) || 0));
+      if (n < 1000) return String(n);
+      return n < 1e6 ? Number((n / 1000).toFixed(1)) + 'k' : Number((n / 1e6).toFixed(1)) + 'M';
+    };
+    const pct = (part, whole) => (whole > 0 ? (part / whole) * 100 : 0);
+
+    function mount() {
+      const v = view('context');
+      v.innerHTML = `
+        <div class="pv-head ctx-top"><b>${tr('上下文')}</b><span class="ctx-hint">${tr('按每个成员最近一轮结束时算')}</span></div>
+        <div class="pv-scroll ctx-list" id="cList"></div>`;
+      v.addEventListener('click', (e) => {
+        const t = e.target.closest('[data-ctx-fold]');
+        if (!t) return;
+        const id = t.dataset.ctxFold;
+        if (folded.has(id)) folded.delete(id);
+        else folded.add(id);
+        local.set(FOLD, JSON.stringify([...folded].slice(-200)));
+        render();
+      });
+      // 鼠标停在下面列表的某一类上：条上只亮这一段
+      v.addEventListener('mouseover', (e) => highlight(e.target.closest('.ctx-legend [data-ctx-key]')));
+      v.addEventListener('mouseleave', () => highlight(null));
+    }
+
+    let lit = null;
+    function highlight(row) {
+      if (row === lit) return;
+      lit = row;
+      for (const c of view('context').querySelectorAll('.ctx-card.hl')) c.classList.remove('hl');
+      for (const s of view('context').querySelectorAll('.ctx-bar i.on')) s.classList.remove('on');
+      if (!row) return;
+      const card = row.closest('.ctx-card');
+      const seg = [...card.querySelectorAll('.ctx-bar i')].find((s) => s.dataset.ctxKey === row.dataset.ctxKey);
+      if (!seg) return;
+      card.classList.add('hl');
+      seg.classList.add('on');
+    }
+
+    // 条上的几段（剩余空间在最后）和不占地方的「按需加载」：Claude Code 按它自己的类别；别的工具只有「已用」和「剩余空间」
+    function partsOf(rec) {
+      const win = rec.window || 0;
+      if (Array.isArray(rec.parts) && rec.parts.length) {
+        const used = [];
+        const rest = [];
+        const deferred = [];
+        for (const p of rec.parts) {
+          const id = String(p.id || '');
+          const i = CATS.findIndex((c) => c[0] === id.replace(/_deferred$/, ''));
+          const name = i >= 0 ? CATS[i][1] : String(p.name || id);
+          const key = id || name;
+          if (p.kind === 'deferred') deferred.push({ key, name: tr('{name}（按需加载）', { name }), tokens: p.tokens, cls: 'def' });
+          else if (p.kind === 'free') rest.push({ key, name: tr('剩余空间'), tokens: p.tokens, cls: 'free', at: 2 });
+          else if (p.kind === 'buffer') rest.push({ key, name: BUFFERS[id] || name, tokens: p.tokens, cls: 'buffer', at: 1 });
+          else used.push({ key, name, tokens: p.tokens, cls: i >= 0 ? `s${i + 1}` : 'other', at: i >= 0 ? i : CATS.length });
+        }
+        const byAt = (a, b) => a.at - b.at;
+        return { bar: [...used.sort(byAt), ...rest.sort(byAt)].filter((s) => s.tokens > 0), deferred };
+      }
+      if (!win) return { bar: [], deferred: [] };
+      return {
+        bar: [
+          { key: 'used', name: tr('已用'), tokens: rec.used, cls: 's1' },
+          { key: 'free', name: tr('剩余空间'), tokens: Math.max(0, win - rec.used), cls: 'free' },
+        ].filter((s) => s.tokens > 0),
+        deferred: [],
+      };
+    }
+
+    function card(a, rec, running) {
+      const env = (S.env && S.env.adapters && S.env.adapters[a.adapter]) || {};
+      const tool = env.label || a.adapter;
+      const model = (rec && rec.model) || a.model;
+      const sub = [tool, model ? ctx.modelName(a.adapter, model) : ''].filter(Boolean).join(' · ');
+      const open = !folded.has(a.id);
+      const head = `<button type="button" class="ctx-head" data-ctx-fold="${a.id}" aria-expanded="${open}" title="${open ? tr('收起') : tr('展开')}">
+          <span class="avatar sm" style="--c:${a.color}">${esc(initial(a.name))}</span>
+          <span class="ctx-who"><b>${esc(a.name)}</b><span>${esc(sub)}</span></span>${ICONS.chevDown}</button>`;
+      if (!rec) {
+        const why = env.context === false ? tr('{tool} 不报告上下文用量。', { tool }) : tr('发过言以后，这里会显示它的上下文用量。');
+        return `<section class="ctx-card empty" data-ctx-agent="${a.id}">${head}<p class="ctx-none">${esc(why)}</p></section>`;
+      }
+      const win = rec.window || 0;
+      const used = pct(rec.used, win);
+      const { bar, deferred } = partsOf(rec);
+      // 快满了：用到八成以后提醒一下（Claude Code、Codex 到时候会自动压缩，别的工具可能直接出错）
+      const full = win && used >= 80 ? `<span class="ctx-full">${ICONS.warn}${tr('快满了')}</span>` : '';
+      const sum = win
+        ? `<div class="ctx-sum"><span>${tr('已使用 {pct}%', { pct: Math.round(used) })}</span>${full}<span class="grow"></span><span class="ctx-num">${fmtTok(rec.used)} / ${fmtTok(win)}</span></div>`
+        : `<div class="ctx-sum"><span>${tr('已使用 {n}', { n: fmtTok(rec.used) })}</span></div><p class="ctx-note">${tr('不知道这个模型的上下文窗口有多大')}</p>`;
+      const label = (s) => `${s.name} · ${fmtTok(s.tokens)}${s.cls === 'def' ? '' : ` · ${pct(s.tokens, win).toFixed(1)}%`}`;
+      const segs = bar.map((s) => `<i class="${s.cls}" data-ctx-key="${esc(s.key)}" style="flex-grow:${s.tokens}" title="${esc(label(s))}"></i>`).join('');
+      const barHtml = win && bar.length ? `<div class="ctx-bar" role="img" aria-label="${esc(tr('已使用 {pct}%', { pct: Math.round(used) }))}">${segs}</div>` : '';
+      const row = (s) =>
+        `<li data-ctx-key="${esc(s.key)}"><i class="sw ${s.cls}"></i><span class="n">${esc(s.name)}</span><span class="t">${fmtTok(s.tokens)}</span><span class="p">${s.cls === 'def' ? '—' : pct(s.tokens, win).toFixed(1) + '%'}</span></li>`;
+      const legend = win && bar.length ? `<ul class="ctx-legend">${[...bar, ...deferred].map(row).join('')}</ul>` : '';
+      const foot = `<p class="ctx-foot">${running ? tr('正在工作，这一轮结束后更新') : tr('{time} 更新', { time: fmtTime(rec.at) })}</p>`;
+      return `<section class="ctx-card${open ? '' : ' folded'}" data-ctx-agent="${a.id}">${head}${sum}${barHtml}${open ? legend + foot : ''}</section>`;
+    }
+
+    function render() {
+      const box = $('#cList');
+      if (!box) return;
+      lit = null;
+      if (!S.roomId || !S.room) {
+        box.innerHTML = noRoom(tr('上下文'));
+        return;
+      }
+      const list = enabledAgents();
+      if (!list.length) {
+        box.innerHTML = `<div class="pv-empty"><p>${tr('这个会话还没有成员')}</p></div>`;
+        return;
+      }
+      const all = S.room.context || {};
+      const run = S.state && S.state.running;
+      box.innerHTML = list.map((a) => card(a, all[a.id], !!run && run.agentId === a.id)).join('');
+    }
+
+    return { mount, activate: render, render };
+  })();
+
+  // =====================================================================
   // 终端：真正的终端（node-pty + xterm.js），在项目文件夹里打开
   // =====================================================================
   const TERM = (() => {
@@ -1567,6 +1732,10 @@ window.createPanel = function createPanel(ctx) {
   })();
 
   // ---------- 给 app.js 用的接口 ----------
+  function refreshContext() {
+    if (P.open && P.tab === 'context') CONTEXT.render();
+  }
+
   return {
     mount,
     show,
@@ -1586,10 +1755,15 @@ window.createPanel = function createPanel(ctx) {
       SIDE.onRoom();
       TERM.onRoom();
       BROWSER.onRoom();
+      refreshContext();
     },
     onMembers() {
       if (P.open && P.tab === 'side') SIDE.renderHead();
+      refreshContext();
     },
+    // 成员的上下文更新了、谁在工作变了：「上下文」页开着就重画
+    onContext: refreshContext,
+    onState: refreshContext,
     onFiles: (roomId, list) => FILES.onFiles(roomId, list),
     onMessages() {
       if (P.open && P.tab === 'files') FILES.refreshList();

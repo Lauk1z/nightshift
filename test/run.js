@@ -211,6 +211,44 @@ test('接力：用户 → GPT → Claude → 结束', async () => {
   assert.match(p2, /看看效果/);
 });
 
+test('上下文：成员每轮结束时上下文用了多少，记在会话里、推给界面；读的时候会话换掉了就不记', async () => {
+  let room = null;
+  adapters.register({
+    id: 'ctxfake',
+    label: 'CtxFake',
+    run({ agent, sessionId }) {
+      const out = { text: '好了', sessionId: sessionId || 's-' + agent.id };
+      if (agent.id === 'a') out.context = { used: 1200, window: 200000, model: 'm1', parts: [{ id: 'messages', name: 'Messages', tokens: 1000, kind: 'used' }] };
+      // 跑完再去读的（Codex 的会话记录、OpenCode 的消息）
+      if (agent.id === 'b') out.contextFetch = async () => ({ used: 5000, window: 0, model: 'm2' });
+      if (agent.id === 'c') {
+        out.contextFetch = async () => {
+          delete room.sessions.c; // 读的时候会话换掉了（比如改了模型）
+          return { used: 9, window: 0, model: 'm3' };
+        };
+      }
+      return { done: new Promise((r) => setTimeout(() => r(out), 10)), cancel() {} };
+    },
+  });
+  const dir = tmp();
+  const ws = path.join(dir, 'ws');
+  fs.mkdirSync(ws);
+  const store = new Store(path.join(dir, 'data'));
+  const events = [];
+  const orch = new Orchestrator(store, { send: (event, data) => events.push({ event, data }) });
+  room = store.createRoom({ name: 't', workspace: ws, agents: ['a', 'b', 'c'].map((id) => ({ id, name: id.toUpperCase(), adapter: 'ctxfake', enabled: true })) });
+  orch.postUser(room.id, '@A @B @C 看看');
+  await idle(orch, room.id);
+  for (let i = 0; i < 200 && !(room.context.a && room.context.b); i++) await new Promise((r) => setTimeout(r, 10));
+  const { at, ...a } = room.context.a;
+  assert.deepStrictEqual(a, { used: 1200, window: 200000, model: 'm1', parts: [{ id: 'messages', name: 'Messages', tokens: 1000, kind: 'used' }] });
+  assert.ok(at > 0);
+  assert.deepStrictEqual([room.context.b.used, room.context.b.window, room.context.b.model], [5000, 0, 'm2'], '不知道窗口多大就是 0');
+  assert.strictEqual(room.context.c, undefined, '已经过时，不记');
+  assert.deepStrictEqual(events.filter((e) => e.event === 'context').map((e) => e.data.agentId).sort(), ['a', 'b']);
+  assert.strictEqual(new Store(path.join(dir, 'data')).getRoom(room.id).context.a.used, 1200, '存进了会话的文件');
+});
+
 test('没 @ 人时交给默认成员', async () => {
   const { store, orch, room } = setupRoom(() => '收到');
   room.settings.defaultAgent = 'c';
@@ -882,11 +920,13 @@ test('API 模型：流式输出 + 调用工具写文件', async () => {
         send({ choices: [{ delta: { content: '我来写文件。' } }] });
         send({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_1', function: { name: 'write_file', arguments: '{"path":"docs/a.md",' } }] } }] });
         send({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '"content":"你好"}' } }] }, finish_reason: 'tool_calls' }] });
+        send({ choices: [], usage: { prompt_tokens: 100, completion_tokens: 10 } });
       } else {
         const toolMsg = j.messages.find((m) => m.role === 'tool');
         assert.match(toolMsg.content, /已写入 docs\/a\.md/);
         send({ choices: [{ delta: { content: '写好了 docs/a.md，' } }] });
         send({ choices: [{ delta: { content: '@Claude 请看' }, finish_reason: 'stop' }] });
+        send({ choices: [], usage: { prompt_tokens: 150, completion_tokens: 20, prompt_tokens_details: { cached_tokens: 100 } } });
       }
       res.end('data: [DONE]\n\n');
     });
@@ -906,6 +946,9 @@ test('API 模型：流式输出 + 调用工具写文件', async () => {
   assert.strictEqual(out.error, undefined);
   assert.strictEqual(out.text, '写好了 docs/a.md，@Claude 请看');
   assert.strictEqual(fs.readFileSync(path.join(ws, 'docs', 'a.md'), 'utf8'), '你好');
+  // 用量是两次调用加起来；上下文看最后一次（送进去的 150 含命中缓存的 100，加上回复 20）
+  assert.deepStrictEqual(out.usage, [{ model: 'm', input: 150, output: 30, cacheRead: 100, cacheWrite: 0 }]);
+  assert.deepStrictEqual(out.context, { used: 170, window: 0, model: 'm' });
   assert.ok(events.some((e) => e.type === 'tool' && e.item.k === 'write'));
   assert.ok(events.some((e) => e.type === 'text' && e.text === '我来写文件。'));
 });
@@ -1111,6 +1154,10 @@ test('Claude Code：模型和思考强度参数（用 --settings 覆盖全局设
   assert.ok(!plain.includes('--effort') && !plain.includes('--settings') && !plain.includes('--model'), '没设置时不加参数');
   const bad = adapters.get('claude').buildArgs({ agent: { effort: 'ultra' } });
   assert.ok(!bad.includes('--effort'), 'Claude 不支持的档位不传');
+  // prompt 写成 stream-json（这一轮做完还要问上下文）；旧版没有 --input-format 就照旧直接写文字
+  assert.strictEqual(plain[plain.indexOf('--input-format') + 1], 'stream-json');
+  const old = adapters.get('claude').buildArgs({ agent: { permission: 'edit' }, caps: adapters.get('claude').parseHelp('  -p, --print  Print response and exit\n  --output-format <format>') });
+  assert.ok(!old.includes('--input-format'));
 });
 
 // 模拟不同版本的 claude --help
@@ -1215,8 +1262,16 @@ test('模型目录：解析 Codex 和 OpenCode 的输出', () => {
   const codex = models.parseCodexModels(
     JSON.stringify({
       models: [
-        { slug: 'b', display_name: 'B', priority: 2, supported_reasoning_levels: [{ effort: 'low', description: 'fast' }, { effort: 'high' }], default_reasoning_level: 'low' },
-        { slug: 'a', display_name: 'A', priority: 1, supported_reasoning_levels: ['medium'] },
+        {
+          slug: 'b',
+          display_name: 'B',
+          priority: 2,
+          supported_reasoning_levels: [{ effort: 'low', description: 'fast' }, { effort: 'high' }],
+          default_reasoning_level: 'low',
+          context_window: 272000,
+          effective_context_window_percent: 95,
+        },
+        { slug: 'a', display_name: 'A', priority: 1, supported_reasoning_levels: ['medium'], context_window: 400000 },
         { slug: 'hidden', visibility: 'hide', priority: 0 },
         { slug: 'old', display_name: 'Old', priority: 0, upgrade: { model: 'a' } },
       ],
@@ -1226,10 +1281,20 @@ test('模型目录：解析 Codex 和 OpenCode 的输出', () => {
   assert.strictEqual(codex[2].label, 'Old（旧版）');
   assert.deepStrictEqual(codex[1].efforts, ['low', 'high']);
   assert.strictEqual(codex[1].effortNotes.low, 'fast');
+  // 上下文窗口：Codex 只用其中 effective_context_window_percent，没写就是全部
+  assert.deepStrictEqual(codex.map((m) => m.context), [400000, 258400, 0]);
   const oc = models.parseOpencodeModels(
-    JSON.stringify({ data: [{ id: 'm1', providerID: 'p', name: 'M1', variants: ['low', 'max'] }, { id: 'm2', providerID: 'p', enabled: false }] })
+    JSON.stringify({
+      data: [
+        { id: 'm1', providerID: 'p', name: 'M1', variants: ['low', 'max'], limit: { context: 262144, output: 65536 } },
+        { id: 'm2', providerID: 'p', enabled: false },
+      ],
+    })
   );
-  assert.deepStrictEqual(oc, [{ id: 'p/m1', label: 'M1', note: 'p', efforts: ['low', 'max'] }]);
+  assert.deepStrictEqual(oc, [{ id: 'p/m1', label: 'M1', note: 'p', efforts: ['low', 'max'], context: 262144 }]);
+  // pi 的表里上下文写成 200K、1M 这样
+  const pi = models.parsePiModels('provider  model  context  max-out  thinking  images\nanthropic  claude-x  200K  64K  yes  yes\nlocal  tiny  32768  4096  no  no\n');
+  assert.deepStrictEqual(pi.map((m) => [m.id, m.context]), [['anthropic/claude-x', 200000], ['local/tiny', 32768]]);
 });
 
 test('读 Codex 的 config.toml 顶层设置', () => {
@@ -2017,8 +2082,36 @@ const args = process.argv.slice(2);
 if (args.includes('--version')) { console.log('${name} 9.9.9'); process.exit(0); }
 if (args.includes('--help')) { console.log(process.env.FAKE_HELP || ''); process.exit(0); }
 let input = '';
-process.stdin.on('data', (d) => (input += d));
-process.stdin.on('end', () => {
+// Claude Code 的 --input-format stream-json：一行一个 JSON。收到 user 消息就吐 lines，收到 control_request 按 control 回答
+// （没给 control 就回答出错，像不支持的版本），stdin 关了才退出
+if (args.includes('--input-format')) {
+  const sc = JSON.parse(process.env.FAKE_SCRIPT || '{}');
+  let buf = '';
+  let started = false;
+  process.stdin.on('data', (d) => {
+    input += d;
+    buf += d;
+    let i;
+    while ((i = buf.indexOf('\\n')) >= 0) {
+      const line = buf.slice(0, i);
+      buf = buf.slice(i + 1);
+      let j = null;
+      try { j = JSON.parse(line); } catch {}
+      if (j && j.type === 'user' && !started) {
+        started = true;
+        for (const l of sc.lines || []) process.stdout.write(l + '\\n');
+      } else if (j && j.type === 'control_request') {
+        const response = sc.control ? { subtype: 'success', request_id: j.request_id, response: sc.control } : { subtype: 'error', request_id: j.request_id, error: 'not supported' };
+        process.stdout.write(JSON.stringify({ type: 'control_response', response }) + '\\n');
+      }
+    }
+  });
+  process.stdin.on('end', () => {
+    fs.appendFileSync(process.env.FAKE_LOG, JSON.stringify({ args, input, prompt: null, promptFile: null, env: {}, patch: null }) + '\\n');
+    process.exit(sc.exit || 0);
+  });
+} else process.stdin.on('data', (d) => (input += d));
+if (!args.includes('--input-format')) process.stdin.on('end', () => {
   const pf = args.indexOf('--prompt-file');
   const prompt = pf >= 0 ? fs.readFileSync(args[pf + 1], 'utf8') : null;
   // DeepSeek Harness：记下这次运行的权限变量和 --patch 文件；Key 只记测试用的（不把真的 Key 写进日志）
@@ -2045,14 +2138,14 @@ process.stdin.on('end', () => {
   return dir;
 }
 
-async function runFake(adapterId, { help, lines = [], exit = 0, stderr = '', failIf, failText, agent = {}, sessionId = null, prompt = '你好' }) {
+async function runFake(adapterId, { help, lines = [], exit = 0, stderr = '', failIf, failText, control, agent = {}, sessionId = null, prompt = '你好' }) {
   const proc = require('../server/proc');
   const dir = fakeCli(adapterId);
   const log = path.join(tmp(), 'calls.jsonl');
   const env = { PATH: process.env.PATH, FAKE_LOG: process.env.FAKE_LOG, FAKE_SCRIPT: process.env.FAKE_SCRIPT, FAKE_HELP: process.env.FAKE_HELP };
   process.env.PATH = dir + path.delimiter + process.env.PATH;
   process.env.FAKE_LOG = log;
-  process.env.FAKE_SCRIPT = JSON.stringify({ lines: lines.map((l) => (typeof l === 'string' ? l : JSON.stringify(l))), exit, stderr, failIf, failText });
+  process.env.FAKE_SCRIPT = JSON.stringify({ lines: lines.map((l) => (typeof l === 'string' ? l : JSON.stringify(l))), exit, stderr, failIf, failText, control });
   if (help !== undefined) process.env.FAKE_HELP = help;
   proc.clearCache();
   const adapter = require('../server/adapters').get(adapterId);
@@ -2080,6 +2173,96 @@ async function runFake(adapterId, { help, lines = [], exit = 0, stderr = '', fai
 
 const notes = (events) => events.filter((e) => e.type === 'text').map((e) => e.text);
 const tools = (events) => events.filter((e) => e.type === 'tool').map((e) => e.item);
+
+test('Claude Code：prompt 用 stream-json 写进去，这一轮做完再问它上下文的分类用量；不回答就按最后一条回复的用量算', async () => {
+  const help = [
+    '  -p, --print                     Print response and exit',
+    '  --input-format <format>         Input format: "text" (default), or "stream-json"',
+    '  --output-format <format>        Output format: "text", "json", or "stream-json"',
+    '  --include-partial-messages      Include partial message chunks',
+    '  --permission-mode <mode>        (choices: "acceptEdits", "bypassPermissions", "default", "dontAsk", "plan")',
+  ].join('\n');
+  const usage = (input, write, read, output) => ({ input_tokens: input, cache_creation_input_tokens: write, cache_read_input_tokens: read, output_tokens: output });
+  const lines = [
+    { type: 'system', subtype: 'init', session_id: 'S1', model: 'claude-x' },
+    { type: 'assistant', message: { id: 'm1', model: 'claude-x', content: [{ type: 'tool_use', id: 't1', name: 'Task', input: { description: '查一下' } }], usage: usage(10, 100, 1000, 20) } },
+    { type: 'assistant', parent_tool_use_id: 't1', message: { id: 'sub', model: 'claude-y', content: [{ type: 'text', text: '子代理' }], usage: usage(50000, 0, 0, 10) } },
+    { type: 'assistant', message: { id: 'm2', model: 'claude-x', content: [{ type: 'text', text: '好了' }], usage: usage(5, 0, 1130, 7) } },
+    {
+      type: 'result',
+      subtype: 'success',
+      result: '好了',
+      session_id: 'S1',
+      modelUsage: { 'claude-x': { inputTokens: 15, outputTokens: 27, cacheReadInputTokens: 2130, cacheCreationInputTokens: 100, contextWindow: 200000 } },
+    },
+  ];
+  const parts = [
+    { id: 'system_prompt', name: 'System prompt', tokens: 2846, kind: 'used' },
+    { id: 'mcp_tools_deferred', name: 'MCP tools (deferred)', tokens: 4000, kind: 'deferred' },
+    { id: 'messages', name: 'Messages', tokens: 1200, kind: 'used' },
+    { id: 'autocompact_buffer', name: 'Autocompact buffer', tokens: 33000, kind: 'buffer' },
+    { id: 'free_space', name: 'Free space', tokens: 162954, kind: 'free' },
+  ];
+  const control = {
+    categories: parts.map((p) => ({ ...p, color: 'inactive', ...(p.kind === 'deferred' ? { isDeferred: true } : {}) })),
+    totalTokens: 4046,
+    maxTokens: 200000,
+    percentage: 2,
+    model: 'claude-x',
+    gridRows: [[{ color: 'inactive', isFilled: true }]],
+  };
+  const r = await runFake('claude', { help, lines, control });
+  assert.strictEqual(r.res.error, null);
+  assert.strictEqual(r.res.text, '好了');
+  const args = r.calls[0].args;
+  assert.strictEqual(args[args.indexOf('--input-format') + 1], 'stream-json');
+  // stdin：先是一条 user 消息；做完以后问上下文（summary：按最后一次的用量估，不另外调接口数 token），回答了就关掉
+  const sent = r.calls[0].input.trim().split('\n').map((l) => JSON.parse(l));
+  assert.deepStrictEqual(sent[0], { type: 'user', message: { role: 'user', content: '你好' } });
+  assert.deepStrictEqual(sent[1].request, { subtype: 'get_context_usage', detail: 'summary' });
+  assert.strictEqual(sent.length, 2);
+  // 分类用量留下来（不要格子图），按需加载的标出来
+  assert.deepStrictEqual(r.res.context, { used: 4046, window: 200000, model: 'claude-x', parts });
+  // 回答出错（不支持的版本）：按最后一条主回复的用量算（子代理的不算），上下文窗口看 modelUsage
+  const old = await runFake('claude', { help, lines });
+  assert.strictEqual(old.res.text, '好了');
+  assert.deepStrictEqual(old.res.context, { used: 5 + 1130 + 7, window: 200000, model: 'claude-x' });
+});
+
+test('Codex：上下文从它自己的会话记录里读最后一个 token_count，按会话 id 找文件', () => {
+  const { codexContext } = require('../server/adapters/codex');
+  const home = tmp();
+  const day = path.join(home, 'sessions', '2026', '10', '27');
+  fs.mkdirSync(day, { recursive: true });
+  const id = '01a17d4c-97aa-73b1-80e9-019011ef3801';
+  const line = (o) => JSON.stringify(o) + '\n';
+  const count = (input, output) =>
+    line({
+      type: 'event_msg',
+      payload: {
+        type: 'token_count',
+        info: {
+          total_token_usage: { input_tokens: 999999, output_tokens: 9999, total_tokens: 1009998 },
+          last_token_usage: { input_tokens: input, cached_input_tokens: input - 10, output_tokens: output, reasoning_output_tokens: 3, total_tokens: input + output },
+          model_context_window: 258400,
+        },
+      },
+    });
+  fs.writeFileSync(
+    path.join(day, `rollout-2026-10-27T22-18-54-${id}.jsonl`),
+    line({ type: 'session_meta', payload: { id } }) +
+      line({ type: 'turn_context', payload: { model: 'gpt-6-sol' } }) +
+      count(1000, 50) +
+      line({ type: 'turn_context', payload: { model: 'gpt-6.1-sol' } }) +
+      count(30000, 400) +
+      line({ type: 'event_msg', payload: { type: 'agent_message', message: '好了' } })
+  );
+  fs.writeFileSync(path.join(day, 'rollout-2026-10-27T10-00-00-01a17000-0000-7000-8000-000000000000.jsonl'), count(5, 5));
+  // 用的是最后一次调用模型时的数（不是整个会话加起来的），窗口和模型也是最后记的
+  assert.deepStrictEqual(codexContext(id, '', home), { used: 30400, window: 258400, model: 'gpt-6.1-sol' });
+  assert.strictEqual(codexContext(id, 'gpt-x', home).model, 'gpt-x', '成员选了模型就写它');
+  assert.strictEqual(codexContext('01a17d4c-0000-0000-0000-000000000000', '', home), null);
+});
 
 test('Gemini CLI：stream-json 的文字、工具、会话和用量；接口出错时进程照样退出 0', async () => {
   const help = '  -o, --output-format  [choices: "text", "json", "stream-json"]\n      --approval-mode  default, auto_edit, yolo, plan\n      --skip-trust  Trust the current workspace';
@@ -2142,6 +2325,8 @@ test('pi：--mode json 的会话头、回复、工具和每条回复的用量；
   assert.strictEqual(r.res.text, '看完了');
   assert.strictEqual(r.res.sessionId, 'p-1');
   assert.deepStrictEqual(r.res.usage, [{ model: 'anthropic/claude-x', input: 30, output: 12, cacheRead: 5, cacheWrite: 1 }]);
+  // 上下文：最后一条回复的用量（送进去的 + 回复）
+  assert.deepStrictEqual(r.res.context, { used: 30, window: 0, model: 'anthropic/claude-x' });
   assert.deepStrictEqual(notes(r.events), ['好的，', '看完了']);
   assert.deepStrictEqual(tools(r.events)[0], { id: 'c1', k: 'search', n: 'ls', d: '.', s: 'running' });
   assert.strictEqual(r.calls[0].input, '你好');
@@ -2278,6 +2463,7 @@ test('DeepSeek Harness：dsh headless --json，任务走 stdin；模型和思考
   assert.strictEqual(r.res.text, '看完了，没问题。');
   assert.strictEqual(r.res.sessionId, 'session-1');
   assert.deepStrictEqual(r.res.usage, [{ model: 'deepseek-v4-pro', input: 150, output: 30, cacheRead: 30, cacheWrite: 0 }]);
+  assert.deepStrictEqual(r.res.context, { used: 60, window: 0, model: 'deepseek-v4-pro' }, '上下文按最后一步算');
   assert.deepStrictEqual(notes(r.events), ['我先看看', '看完了，没问题。']); // 工具调用前一段、最后一段（最后一段和最终回复一样，接力那边会去掉）
   const [use, done] = tools(r.events);
   assert.deepStrictEqual([use.k, use.d, use.s, done.id, done.s], ['read', 'src/a.js', 'running', 'c1', 'ok']);

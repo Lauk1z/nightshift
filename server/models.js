@@ -96,6 +96,8 @@ function parseCodexModels(stdout, conf = {}) {
         efforts: levels.map((x) => x.effort).filter(Boolean),
         effortNotes: Object.fromEntries(levels.map((x) => [x.effort, x.description || ''])),
         defaultEffort: m.default_reasoning_level || '',
+        // 上下文窗口：Codex 只用其中 effective_context_window_percent（一般 95%），和它自己的会话记录里写的一样
+        context: m.context_window > 0 ? Math.round((m.context_window * (m.effective_context_window_percent || 100)) / 100) : 0,
       };
     });
   return models;
@@ -128,7 +130,13 @@ function parseOpencodeModels(stdout) {
   const list = Array.isArray(j) ? j : j.data || [];
   return list
     .filter((m) => m && m.id && m.providerID && m.enabled !== false)
-    .map((m) => ({ id: `${m.providerID}/${m.id}`, label: m.name || m.id, note: m.providerID, efforts: variantNames(m.variants) }));
+    .map((m) => ({
+      id: `${m.providerID}/${m.id}`,
+      label: m.name || m.id,
+      note: m.providerID,
+      efforts: variantNames(m.variants),
+      context: (m.limit && Number(m.limit.context)) || 0,
+    }));
 }
 
 // opencode models 的输出：每行一个 provider/model
@@ -198,6 +206,13 @@ function geminiCatalog(home = os.homedir()) {
 // ---------- pi：pi --list-models 是一张表（provider  model  context  max-out  thinking  images） ----------
 const PI_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 
+// 表里的上下文写成 200K、1M、128000 这样
+function tokenCount(v) {
+  const m = String(v || '').replace(/,/g, '').match(/^(\d+(?:\.\d+)?)([kKmM])?$/);
+  if (!m) return 0;
+  return Math.round(Number(m[1]) * (/k/i.test(m[2] || '') ? 1000 : /m/i.test(m[2] || '') ? 1000000 : 1));
+}
+
 function parsePiModels(stdout) {
   const lines = String(stdout || '')
     .split(/\r?\n/)
@@ -209,7 +224,13 @@ function parsePiModels(stdout) {
     .slice(head + 1)
     .map((l) => l.split(/\s+/))
     .filter((c) => c.length >= 2 && /^[\w.@-]+$/.test(c[0]) && /^[\w.:@/-]+$/.test(c[1]))
-    .map(([provider, id, , , thinking]) => ({ id: `${provider}/${id}`, label: id, note: provider, efforts: /^yes$/i.test(thinking || '') ? PI_EFFORTS : [] }));
+    .map(([provider, id, context, , thinking]) => ({
+      id: `${provider}/${id}`,
+      label: id,
+      note: provider,
+      efforts: /^yes$/i.test(thinking || '') ? PI_EFFORTS : [],
+      context: tokenCount(context),
+    }));
 }
 
 async function piCatalog(home = os.homedir()) {

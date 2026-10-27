@@ -11,6 +11,7 @@ const files = require('./files');
 const skills = require('./skills');
 const acceptance = require('./acceptance');
 const { recordRun } = require('./usage');
+const models = require('./models');
 const { t: tr } = require('./i18n');
 const { parseMentions, buildCliPrompt, buildApiMessages, buildReviewPrompt, buildReviewApiMessages, parseVerdict, approvalMode } = require('./prompt');
 
@@ -239,6 +240,30 @@ class Orchestrator {
     this.emitState(roomId);
   }
 
+  // 右侧面板的「上下文」：记下成员这一轮结束时上下文用了多少（群聊里的会话；侧边对话、自动审查是另外的会话，不算）。
+  // 有的工具要跑完再去读（Codex 的会话记录、OpenCode 的消息），不等它；读到了再推给界面。
+  // 工具没说上下文窗口多大、用的是默认模型的，按模型目录补上
+  async noteContext(roomId, agent, res, sessionId) {
+    let ctx = res && res.context;
+    if (!ctx && res && typeof res.contextFetch === 'function') ctx = await res.contextFetch().catch(() => null);
+    if (!ctx || !(ctx.used > 0)) return;
+    let model = ctx.model || res.model || agent.model || '';
+    let window = ctx.window || 0;
+    if ((!window || !model) && agent.adapter !== 'openai') {
+      const cat = await models.catalog(agent.adapter).catch(() => null);
+      if (cat && !model) model = cat.defaultModel || '';
+      const m = cat && (cat.models || []).find((x) => x.id === model);
+      if (!window && m && m.context) window = m.context;
+    }
+    const room = this.store.getRoom(roomId);
+    if (!room || !room.agents.some((a) => a.id === agent.id)) return;
+    if ((room.sessions[agent.id] || null) !== sessionId) return; // 读的时候会话换掉了（改了模型、换了文件夹）：已经过时
+    const entry = { used: ctx.used, window, model, at: Date.now(), ...(ctx.parts ? { parts: ctx.parts } : {}) };
+    room.context = { ...(room.context || {}), [agent.id]: entry };
+    this.store.saveRoom(room);
+    this.bus.send('context', { roomId, agentId: agent.id, context: entry });
+  }
+
   async runTurn(roomId, agent, trigger) {
     const r = this.rt(roomId);
     const room = this.store.getRoom(roomId);
@@ -267,6 +292,7 @@ class Orchestrator {
       if (res.error && !run.stopped && res.usedSession && run.items.length === 0 && RESUME_FAIL.test(`${res.error}\n${res.stderr || ''}`)) {
         delete room.sessions[agent.id];
         delete room.lastSeen[agent.id];
+        if (room.context) delete room.context[agent.id];
         res = await this.invoke(room, agent, adapter, run, trigger);
       }
     } catch (e) {
@@ -328,6 +354,7 @@ class Orchestrator {
     this.emitProgress(roomId, true);
     // 记下这一轮用了多少 token（OpenCode 要再去读一次，不等它，接力照常往下走）
     recordRun(this.usage, { room, agent, res, startedAt: run.startedAt, side: false }).catch(() => {});
+    this.noteContext(roomId, agent, res, room.sessions[agent.id] || null).catch(() => {});
 
     if (status === 'done') {
       this.enqueue(roomId, targets, { auto: true, seq: msg.seq, byName: agent.name });

@@ -192,7 +192,9 @@ function killTree(child) {
 }
 
 // 启动一个输出 JSONL 的命令行工具：prompt 从 stdin 写入，每行 JSON 回调 onJson。
-function runJsonl({ cmd, args, cwd, input, onJson, onLine, env }) {
+// keepOpen：写完 input 先不关 stdin（Claude Code 的 --input-format stream-json 这一轮做完以后还要再问它话），
+// 由调用的一方在用完以后 child.stdin.end()
+function runJsonl({ cmd, args, cwd, input, onJson, onLine, env, keepOpen = false }) {
   const child = spawnTool(cmd, args, { cwd, extraEnv: env });
   let buf = '';
   let stderr = '';
@@ -236,7 +238,8 @@ function runJsonl({ cmd, args, cwd, input, onJson, onLine, env }) {
     });
   });
   child.stdin.on('error', () => {});
-  child.stdin.end(input == null ? '' : input, 'utf8');
+  if (keepOpen) child.stdin.write(input == null ? '' : input, 'utf8');
+  else child.stdin.end(input == null ? '' : input, 'utf8');
   return { child, done };
 }
 

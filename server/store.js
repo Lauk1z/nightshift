@@ -55,6 +55,8 @@ function normalizeRoom(r) {
   r.lastSeen = r.lastSeen || {};
   r.sideSessions = r.sideSessions || {}; // 侧边对话用的会话，和群聊里的分开
   r.sideSeen = r.sideSeen || {}; // 每个成员上次在侧边对话里回答时，群聊和侧边对话各到了哪一条
+  // 每个成员最近一轮结束时上下文用了多少（右侧面板的「上下文」，见 orchestrator.js 的 noteContext）；换了会话就删掉
+  r.context = r.context && typeof r.context === 'object' ? r.context : {};
   // acceptance：交付验收清单（见 acceptance.js），默认关。
   // approval：成员 @用户 时怎么办（manual 人工审查 / auto 自动执行 / full 全权代理，见 prompt.js 的 approvalMode）；
   // reviewer：自动执行时的审查模型，是某个成员的 id，或者 'own'（专门接入的那个，存在 r.reviewer）

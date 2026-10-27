@@ -33,10 +33,12 @@ async function detectAll(force = false) {
     const out = {};
     await Promise.all(
       list.map(async (a) => {
+        // context：跑完一轮能不能说出上下文用了多少（右侧面板的「上下文」；Gemini CLI、Grok、Hermes 只给合计，说不出）
+        const base = { id: a.id, label: a.label, cli: !!a.cmd, context: !!a.reportsContext };
         try {
-          out[a.id] = { id: a.id, label: a.label, cli: !!a.cmd, ...(await a.detect(force)) };
+          out[a.id] = { ...base, ...(await a.detect(force)) };
         } catch (e) {
-          out[a.id] = { id: a.id, label: a.label, cli: !!a.cmd, installed: false, error: e.message };
+          out[a.id] = { ...base, installed: false, error: e.message };
         }
       })
     );

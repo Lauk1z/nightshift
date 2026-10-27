@@ -2,7 +2,7 @@
 // OpenCode：opencode run --format json，prompt 走 stdin，用 --session <id> 续上会话。
 // OpenCode 自己能接 DeepSeek / Kimi / Ollama 等很多模型，模型写成 provider/model。
 const { runJsonl, runCapture, killTree, detectCli, splitArgs } = require('../proc');
-const { rel, outside, clip, tail, makeProbe, addUsage } = require('./common');
+const { rel, outside, clip, tail, makeProbe, addUsage, contextOf } = require('./common');
 const { t: tr } = require('../i18n');
 
 // OpenCode 的 JSON 输出里没有 token 用量。跑完以后用 opencode api 读一下这个会话的消息，
@@ -25,12 +25,26 @@ function opencodeUsage(list, since) {
   return out;
 }
 
-async function fetchUsage(sessionId, since, cwd) {
+// 上下文（右侧面板）：最后一条回复调用模型时的用量（送进去的含缓存，加上回复和思考）
+function opencodeContext(list) {
+  const m = [...(Array.isArray(list) ? list : [])].reverse().find((x) => x && x.type === 'assistant' && x.tokens);
+  if (!m) return null;
+  const t = m.tokens;
+  const model = m.model && m.model.id ? (m.model.providerID ? m.model.providerID + '/' + m.model.id : m.model.id) : '';
+  return contextOf(model, {
+    input: t.input,
+    output: (Number(t.output) || 0) + (Number(t.reasoning) || 0),
+    cacheRead: t.cache && t.cache.read,
+    cacheWrite: t.cache && t.cache.write,
+  });
+}
+
+async function fetchMessages(sessionId, cwd) {
   if (!sessionId) return [];
   const r = await runCapture('opencode', ['api', 'session.message.list', '--param', 'sessionID=' + sessionId], { timeoutMs: 20000, cwd });
   try {
     const j = JSON.parse(r.stdout);
-    return opencodeUsage(Array.isArray(j) ? j : j.data, since);
+    return (Array.isArray(j) ? j : j.data) || [];
   } catch {
     return [];
   }
@@ -107,6 +121,8 @@ module.exports = {
   buildArgs,
   probe,
   opencodeUsage,
+  opencodeContext,
+  reportsContext: true,
   async detect(force) {
     const base = await detectCli('opencode');
     if (!base.installed) return base;
@@ -151,7 +167,12 @@ module.exports = {
     };
 
     const startedAt = Date.now();
-    const usageFetch = () => fetchUsage(sid, startedAt, cwd);
+    // 用量和上下文都要读这个会话的消息：只读一次
+    let messages = null;
+    const fetched = () => messages || (messages = fetchMessages(sid, cwd));
+    const usageFetch = async () => opencodeUsage(await fetched(), startedAt);
+    const contextFetch = async () => opencodeContext(await fetched());
+    const later = { usageFetch, contextFetch };
     const done = (async () => {
       const caps = await probe();
       if (caps.known && !caps.json) return { error: OUTDATED() };
@@ -159,12 +180,12 @@ module.exports = {
       const r = runJsonl({ cmd: 'opencode', args: buildArgs({ agent, sessionId, caps }), cwd, input: prompt, onJson });
       child = r.child;
       const { code, error, stderr } = await r.done;
-      if (error) return { error: error.message, sessionId: sid, stderr, usageFetch };
-      if (failure) return { text: lastText, error: failure, sessionId: sid, stderr, usageFetch };
+      if (error) return { error: error.message, sessionId: sid, stderr, ...later };
+      if (failure) return { text: lastText, error: failure, sessionId: sid, stderr, ...later };
       if (code !== 0 && !lastText) {
-        return { error: tail(stderr) || tr('{cmd} 意外退出（退出码 {code}）', { cmd: 'opencode', code }), sessionId: sid, stderr, usageFetch };
+        return { error: tail(stderr) || tr('{cmd} 意外退出（退出码 {code}）', { cmd: 'opencode', code }), sessionId: sid, stderr, ...later };
       }
-      return { text: lastText, error: null, sessionId: sid, model: agent.model || '', stderr, usageFetch };
+      return { text: lastText, error: null, sessionId: sid, model: agent.model || '', stderr, ...later };
     })().catch((e) => ({ error: e.message || String(e), sessionId: sid }));
 
     return {

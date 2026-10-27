@@ -220,6 +220,8 @@
     arrowDown: I('<path d="M8 3v9.6M3.8 8.6L8 12.8l4.2-4.2"/>'),
     stopSq: I('<rect x="4.5" y="4.5" width="7" height="7" rx="1.4" fill="currentColor" stroke="none"/>'),
     gauge: I('<path d="M2.6 11.6a5.6 5.6 0 1110.8 0"/><path d="M8 9.6l2.6-3.2"/><circle cx="8" cy="9.8" r=".9"/>'),
+    context: I('<circle cx="8" cy="8" r="5.6" opacity=".38"/><path d="M8 2.4a5.6 5.6 0 0 1 4.85 8.4" stroke-width="2"/>'),
+    warn: I('<path d="M8 2.4l5.9 10.4H2.1z"/><path d="M8 6.6v2.9M8 11.2v.05"/>'),
     pin: I('<path d="M5.5 2.2h5M6.5 2.2v4L4.2 9.4h7.6L9.5 6.2v-4M8 9.4v4.4"/>'),
     help: I('<circle cx="8" cy="8" r="6"/><path d="M6.3 6.2a1.8 1.8 0 113 1.4c-.6.4-1.3.8-1.3 1.6M8 11.1v.1"/>'),
     update: I('<circle cx="8" cy="8" r="6"/><path d="M8 11V5.3M5.6 7.6L8 5.2l2.4 2.4"/>'),
@@ -243,6 +245,7 @@
     ['side', tr('侧边对话'), 'chat'],
     ['term', tr('终端'), 'terminal'],
     ['browser', tr('浏览器'), 'web'],
+    ['context', tr('上下文'), 'context'],
   ];
 
   // 文件类型：显示名、图标、能不能在 Agent Chat 里预览
@@ -3048,7 +3051,13 @@
       panel.onRoom();
       // 在后台读取模型目录，成员列表里就能显示模型的正式名字
       for (const ad of new Set(agents().map((a) => a.adapter).filter((x) => x !== 'openai'))) {
-        if (!S.catalogs[ad]) loadCatalog(ad).then(() => id === S.roomId && renderMembers());
+        if (!S.catalogs[ad]) {
+          loadCatalog(ad).then(() => {
+            if (id !== S.roomId) return;
+            renderMembers();
+            panel.onContext(); // 「上下文」页上的模型名也换成正式的
+          });
+        }
       }
     } catch (e) {
       toast(e.message, true);
@@ -4451,6 +4460,13 @@
       renderMembers();
       renderComposerState();
       renderLive();
+      panel.onState();
+    });
+    // 成员这一轮结束时上下文用了多少（右侧面板的「上下文」）
+    on('context', ({ roomId, agentId, context }) => {
+      if (roomId !== S.roomId || !S.room) return;
+      S.room.context = { ...(S.room.context || {}), [agentId]: context };
+      panel.onContext();
     });
     on('room', (room) => {
       if (room.id !== S.roomId) return;
@@ -4635,6 +4651,7 @@
       confirmBox,
       agentById,
       enabledAgents,
+      modelName,
       initial,
       hashColor,
       fmtTime,

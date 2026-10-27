@@ -67,12 +67,13 @@ Messages that don't @mention anyone go to the member shown at the bottom right o
 ## The interface
 
 - **Sidebar**: search, New chat, New project, and your projects and chats below. Chats can be pinned and dragged into order; right-click for their actions.
-- **Title bar**: the project name, the chat name ▾ (switch chats), member avatars (the members panel), and on the right the four pages of the side panel.
+- **Title bar**: the project name, the chat name ▾ (switch chats), member avatars (the members panel), and on the right the five pages of the side panel.
 - **Side panel**:
   - **Files**: the project's file tree and previews (web pages, Markdown, code, images, PDF…); files a member changed are marked with who changed them.
   - **Side chat**: ask one member a question; read-only, and it stays out of the group chat.
   - **Terminal**: PowerShell, opened in the project folder.
   - **Browser**: open web pages running on this computer, or the project's `.html` files.
+  - **Context**: how much of each member's context window it has used in this chat, as of its latest turn. Claude Code also breaks it down into messages, system tools, MCP tools, system prompt and skills; Gemini CLI, Grok and Hermes don't report it.
 - Files a member created or changed in a turn are listed under its message; click one to preview it.
 
 <img src="docs/screenshots/en/preview.png" alt="The Files page of the side panel previewing the to-do list page the members built; on the left, DeepSeek's reply after testing, with its file cards">
