@@ -47,7 +47,8 @@ function snapshot(root) {
 
 const rel = (root, p) => path.relative(root, p).replace(/\\/g, '/');
 
-function diff(before, after, root) {
+// limit：消息底部的文件卡片最多列 60 个；撤销这一轮的改动要完整的清单（见 checkpoints.js），传 Infinity
+function diff(before, after, root, limit = 60) {
   const out = [];
   for (const [p, a] of after.map) {
     const b = before.map.get(p);
@@ -59,7 +60,7 @@ function diff(before, after, root) {
     for (const p of before.map.keys()) if (!after.map.has(p)) out.push({ path: rel(root, p), change: 'delete' });
   }
   const order = { add: 0, update: 1, delete: 2 };
-  return out.sort((x, y) => order[x.change] - order[y.change] || x.path.localeCompare(y.path)).slice(0, 60);
+  return out.sort((x, y) => order[x.change] - order[y.change] || x.path.localeCompare(y.path)).slice(0, limit);
 }
 
 // 界面传来的路径（相对路径、绝对路径、AI 写的 /E:/x/y.html、file:// 链接、带 :行号 的）先清理成普通路径

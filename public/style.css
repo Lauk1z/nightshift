@@ -630,6 +630,81 @@ svg.thick {
   font-size: 12.5px;
   color: var(--faint);
 }
+/* 搜索聊天记录的结果：哪个会话、谁、多久以前，下面一小段带高亮的原文 */
+.hit-list {
+  margin: 0 0 8px;
+  padding: 0;
+  list-style: none;
+}
+.hit {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--ink-2);
+  font-size: 12.5px;
+  text-align: left;
+}
+.hit:hover {
+  background: var(--hover);
+}
+.hit-where {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+  white-space: nowrap;
+}
+.hit-where b {
+  overflow: hidden;
+  color: var(--ink);
+  font-weight: 600;
+  text-overflow: ellipsis;
+}
+.hit-where span {
+  flex: none;
+  color: var(--faint);
+}
+.hit-text {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--graphite);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.hit-text mark {
+  padding: 0 1px;
+  border-radius: 3px;
+  background: var(--amber-bg);
+  color: var(--ink);
+  box-shadow: inset 0 -1px 0 var(--amber-line);
+}
+/* 从搜索结果跳过来的那条消息：闪一下 */
+.msg.hit-flash {
+  animation: hit-flash 2.4s ease-out;
+}
+@keyframes hit-flash {
+  0%,
+  35% {
+    background: var(--amber-bg);
+    box-shadow: 0 0 0 6px var(--amber-bg);
+  }
+  100% {
+    background: transparent;
+    box-shadow: 0 0 0 6px transparent;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .msg.hit-flash {
+    animation: none;
+    outline: 2px solid var(--amber-line);
+    outline-offset: 4px;
+  }
+}
 /* 项目下面的「会话」：不属于哪个项目的会话 */
 .proj-list + .sec-head {
   margin-top: 10px;
@@ -1225,6 +1300,65 @@ body.sorting * {
 }
 .msg.user .foot {
   justify-content: flex-end;
+}
+/* 编辑重发：原来那条淡一些，旁边写着「已修改」；新的那条写着「修改后」 */
+.msg.user.edited .bubble,
+.msg.user.edited .msg-atts {
+  opacity: 0.5;
+}
+.edited-tag {
+  color: var(--faint);
+  font-size: 12px;
+}
+/* 撤销了这一轮的改动：写在消息底部，旁边是「恢复」 */
+.undone-tag {
+  color: var(--amber);
+}
+/* 运行命令前问我：正在工作的成员下面，等你批准的卡片 */
+.ask-card {
+  display: grid;
+  gap: 8px;
+  margin: 8px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--amber-line);
+  border-radius: 12px;
+  background: var(--amber-bg);
+}
+.ask-card[hidden] {
+  display: none;
+}
+.ask-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink);
+  font-size: 14px;
+}
+.ask-head svg {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  color: var(--amber);
+}
+.ask-note {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 13px;
+}
+.ask-detail {
+  max-height: 220px;
+  margin: 0;
+  padding: 8px 10px;
+  overflow: auto;
+  border-radius: 8px;
+  background: var(--code-bg);
+  font: 12.5px/1.5 var(--mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.ask-acts {
+  display: flex;
+  gap: 8px;
 }
 /* 你发的附件：气泡下面靠右一排卡片，点文件预览、点文件夹在文件面板里展开 */
 .msg-atts {

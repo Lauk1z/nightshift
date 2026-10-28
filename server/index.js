@@ -17,6 +17,8 @@ const i18n = require('./i18n');
 const tr = i18n.t; // 给用户看的文字跟着设置里的语言（AI 看的提示词仍然是中文）
 const adapters = require('./adapters');
 const models = require('./models');
+const { exportMarkdown, exportName } = require('./export');
+const { Checkpoints } = require('./checkpoints');
 const skills = require('./skills');
 const files = require('./files');
 const { RESERVED, APPROVAL, approvalMode } = require('./prompt');
@@ -44,6 +46,7 @@ let side = null;
 let terms = null;
 let settings = null;
 let usage = null;
+let checkpoints = null; // 撤销某一轮的改动（见 checkpoints.js）
 
 // ---------- SSE ----------
 class Bus {
@@ -209,9 +212,11 @@ function cleanAgent(input, room, existing) {
     a.effort = e;
   }
   if (input.permission !== undefined) {
-    if (!['readonly', 'edit', 'full'].includes(input.permission)) throw bad(tr('权限设置不正确'));
+    if (!['readonly', 'edit', 'ask', 'full'].includes(input.permission)) throw bad(tr('权限设置不正确'));
     a.permission = input.permission;
   }
+  // 运行命令前问我：只有能在运行时问你的工具才行（Claude Code、API 模型），别的当成可改文件
+  if (a.permission === 'ask' && !(adapters.get(a.adapter) || {}).canAsk) a.permission = 'edit';
   if (input.color !== undefined) a.color = /^#[0-9a-f]{6}$/i.test(input.color) ? input.color : a.color;
   if (!a.color) a.color = PALETTE[room.agents.length % PALETTE.length];
   if (input.extraArgs !== undefined) a.extraArgs = String(input.extraArgs || '').trim().slice(0, 500);
@@ -518,6 +523,7 @@ route('DELETE', '/api/projects/:id', async (req, { params }) => {
   }
   terms.killRoom(project.id);
   store.deleteProject(project.id);
+  checkpoints.drop(project.id);
   if (project.standalone) removeChatFolder(project.workspace);
   broadcastRooms();
   return { ok: true };
@@ -635,16 +641,77 @@ route('POST', '/api/rooms', async (req, { body }) => {
   return publicRoom(room);
 });
 
-route('GET', '/api/rooms/:id', async (req, { params }) => {
+route('GET', '/api/rooms/:id', async (req, { params, query }) => {
   const room = needRoom(params.id);
   const msgs = store.messages(room.id);
+  // 一般只给最近 400 条；从搜索结果跳过来的（from）从那条消息前面几条开始给，最多 3000 条
+  const from = Number(query.get('from')) || 0;
   return {
     room: publicRoom(room),
-    messages: msgs.slice(-400),
+    messages: from ? msgs.filter((m) => m.seq >= from - 5).slice(0, 3000) : msgs.slice(-400),
     total: msgs.length,
     state: orch.state(room.id),
     progress: orch.progress(room.id),
   };
+});
+
+// 搜索聊天记录：所有会话里文字包含 q 的消息（不分大小写，系统提示不算），新的在前，最多 50 条，每条带一小段上下文
+function snippet(text, at, len) {
+  const flat = (x) => x.replace(/\s+/g, ' ');
+  const start = Math.max(0, at - 24);
+  const end = Math.min(text.length, at + len + 60);
+  return {
+    before: (start > 0 ? '…' : '') + flat(text.slice(start, at)).trimStart(),
+    match: flat(text.slice(at, at + len)),
+    after: flat(text.slice(at + len, end)) + (end < text.length ? '…' : ''),
+  };
+}
+
+route('GET', '/api/search', async (req, { query }) => {
+  const q = String(query.get('q') || '').trim().toLowerCase().slice(0, 100);
+  if ([...q].length < 2) return { results: [], total: 0 };
+  const hits = [];
+  for (const room of store.listRooms()) {
+    for (const m of store.messages(room.id)) {
+      if (m.kind === 'system') continue;
+      const text = String(m.text || '');
+      const at = text.toLowerCase().indexOf(q);
+      if (at < 0) continue;
+      hits.push({ roomId: room.id, room: room.name, id: m.id, seq: m.seq, ts: m.ts, name: m.from === 'user' ? '' : m.name, snippet: snippet(text, at, q.length) });
+    }
+  }
+  hits.sort((a, b) => b.ts - a.ts);
+  return { results: hits.slice(0, 50), total: hits.length };
+});
+
+// 撤销存档的清理（见 checkpoints.js 的 gc）：每个项目还有哪些内容被消息上的撤销记录用着
+function checkpointRefs() {
+  const keep = {};
+  for (const p of store.listProjects()) {
+    const set = (keep[p.id] = new Set());
+    for (const r of store.roomsOf(p.id)) {
+      for (const m of store.messages(r.id)) {
+        for (const e of (m.undo && m.undo.files) || []) {
+          if (e.before) set.add(e.before);
+          if (e.after) set.add(e.after);
+        }
+      }
+    }
+  }
+  return keep;
+}
+
+// 导出会话：整段聊天记录写成 Markdown，当成下载（桌面版会弹出「另存为」，网页版存进下载文件夹）
+route('GET', '/api/rooms/:id/export', async (req, { params, res }) => {
+  const room = needRoom(params.id);
+  const text = exportMarkdown(room, store.getProject(room.projectId), store.messages(room.id));
+  res.writeHead(200, {
+    'content-type': 'text/markdown; charset=utf-8',
+    'content-disposition': `attachment; filename="chat.md"; filename*=UTF-8''${encodeURIComponent(exportName(room))}`,
+    'cache-control': 'no-store',
+  });
+  res.end(text);
+  return undefined;
 });
 
 route('PATCH', '/api/rooms/:id', async (req, { params, body }) => {
@@ -700,6 +767,7 @@ route('DELETE', '/api/rooms/:id', async (req, { params }) => {
   if (project && project.standalone && !store.roomsOf(project.id).length) {
     terms.killRoom(project.id);
     store.deleteProject(project.id);
+    checkpoints.drop(project.id);
     removeChatFolder(project.workspace);
   }
   broadcastRooms();
@@ -798,15 +866,20 @@ route('POST', '/api/rooms/:id/agents/:aid/run', async (req, { params }) => {
 route('POST', '/api/rooms/:id/messages', async (req, { params, body }) => {
   const at = needRoom(params.id);
   const text = String(body.text || '').trim();
+  // 编辑重发（replaces）：原来那条的附件一起带过来
+  const old = body.replaces ? store.messages(at.id).find((m) => m.id === String(body.replaces) && m.from === 'user') : null;
+  if (body.replaces && !old) throw bad(tr('要修改的消息不存在'));
+  const given = Array.isArray(body.attachments) ? body.attachments : [];
+  const kept = old && Array.isArray(old.attachments) ? old.attachments.filter((a) => !given.some((g) => g && g.path === a.path)) : [];
   let attachments;
   try {
-    attachments = files.checkAttachments(at.workspace, body.attachments);
+    attachments = files.checkAttachments(at.workspace, [...kept, ...given]);
   } catch (e) {
     throw bad(e.message);
   }
   if (!text && !attachments.length) throw bad(tr('消息不能为空'));
   if (text.length > 50000) throw bad(tr('消息太长了（最多 5 万字）'));
-  const msg = orch.postUser(params.id, text, attachments);
+  const msg = orch.postUser(params.id, text, attachments, { replaces: old ? old.id : undefined });
   // 还没起名字的会话：用第一条消息起标题（只发了附件的，用附件的名字）
   const room = store.getRoom(params.id);
   if (room && room.autoName) {
@@ -879,6 +952,58 @@ function saveUpload(req, dest, max) {
 route('DELETE', '/api/rooms/:id/attachments', async (req, { params, query }) => {
   const room = needRoom(params.id);
   return { removed: files.removeAttachment(room.workspace, query.get('path')) };
+});
+
+// 运行命令前问我：你在等批准的卡片上点了允许或拒绝
+route('POST', '/api/rooms/:id/ask/:kid', async (req, { params, body }) => {
+  needRoom(params.id);
+  try {
+    orch.answer(params.id, params.kid, !!body.allow);
+  } catch (e) {
+    throw bad(e.message);
+  }
+  return { ok: true };
+});
+
+// 重新回答：让成员换个思路把它的某一条回复再做一遍（原来那条留着）
+route('POST', '/api/rooms/:id/messages/:mid/again', async (req, { params }) => {
+  needRoom(params.id);
+  try {
+    orch.again(params.id, params.mid);
+  } catch (e) {
+    throw bad(e.message);
+  }
+  return { ok: true };
+});
+
+// 撤销某一轮的改动（redo：恢复）：文件现在和这一轮结束时一样的才改回去，之后又被改过的不动。
+// 有成员正在干活时不行（文件还在变）。改回去以后在群里留一句，成员也看得到（它们得知道文件变了）
+route('POST', '/api/rooms/:id/messages/:mid/undo', async (req, { params, body }) => {
+  const room = needRoom(params.id);
+  if (orch.isBusy(room.id)) throw bad(tr('有成员正在工作，先停止再撤销'));
+  const redo = !!body.redo;
+  const m = store.messages(room.id).find((x) => x.id === params.mid);
+  if (!m || !m.undo) throw bad(tr('这一轮没有能撤销的改动'));
+  if (redo !== !!m.undone) throw bad(redo ? tr('这一轮的改动没有撤销过') : tr('这一轮的改动已经撤销了'));
+  const r = checkpoints.apply(room.projectId, room.workspace, m.undo, redo ? 'after' : 'before');
+  const msg = store.updateMessage(room.id, m.id, (x) => {
+    if (redo) delete x.undone;
+    else x.undone = { at: Date.now(), done: r.done.length, skipped: r.skipped };
+  });
+  bus.send('message-update', { roomId: room.id, message: msg });
+  const vars = { seq: m.seq, name: m.name, n: r.done.length };
+  const list = (xs) => xs.slice(0, 20).join('、');
+  const rest = r.skipped.length
+    ? tr('（{k} 个文件之后又被改过，或者太大没存，没有动：{list}）', { k: r.skipped.length, list: r.skipped.slice(0, 5).map((x) => x.path).join(tr('、')) })
+    : '';
+  const text = redo ? tr('你恢复了 #{seq}（{name}）这一轮的改动：{n} 个文件。', vars) : tr('你撤销了 #{seq}（{name}）这一轮的改动：{n} 个文件改回了这一轮之前的样子。', vars);
+  const members =
+    (redo
+      ? `用户恢复了 #${m.seq}（${m.name}）这一轮对文件的改动：${list(r.done) || '（没有）'}。`
+      : `用户撤销了 #${m.seq}（${m.name}）这一轮对文件的改动，这些文件已经改回这一轮之前的样子：${list(r.done) || '（没有）'}。`) +
+    (r.skipped.length ? `有 ${r.skipped.length} 个文件之后又被改过或者太大没存，没有动：${list(r.skipped.map((x) => x.path))}。` : '');
+  orch.system(room.id, text + rest, { members });
+  return { done: r.done, skipped: r.skipped };
 });
 
 // 交付验收清单：「待你确认」的项点了通过 / 不通过，没通过的项点了「仍然通过」（verdict 为空就是取消）。
@@ -1285,6 +1410,16 @@ async function start({ dataDir, port = 3210, desktop = false } = {}) {
   i18n.bind(() => settings.get().language); // 服务端的报错、系统消息跟着设置里的语言
   usage = new Usage(DATA);
   orch = new Orchestrator(store, bus, usage);
+  checkpoints = new Checkpoints(path.join(DATA, 'checkpoints'));
+  orch.checkpoints = checkpoints;
+  // 过一会儿在后台清理撤销用的存档：没有哪条消息还用着的内容删掉，已经删掉的项目整个删掉
+  setTimeout(() => {
+    try {
+      checkpoints.gc(checkpointRefs());
+    } catch (e) {
+      console.warn('[checkpoints]', e.message);
+    }
+  }, 20000).unref();
   side = new SideChat(store, bus, usage);
   terms = new Terminals(bus);
   const server = http.createServer(handle);

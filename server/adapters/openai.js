@@ -11,7 +11,8 @@ const { rel, outside, clip, addUsage, contextOf } = require('./common');
 const { t: tr } = require('../i18n');
 
 const SKIP_DIRS = new Set(['node_modules', '.git', '.agentchat', 'dist', 'build', '.next', '__pycache__', '.venv', 'venv', 'target']);
-const RANK = { readonly: 0, edit: 1, full: 2 };
+// ask：运行命令前问我（工具和完全权限一样，只是 run_command 要等你点允许）
+const RANK = { readonly: 0, edit: 1, ask: 2, full: 2 };
 
 const TOOLS = {
   list_files: {
@@ -174,8 +175,13 @@ async function execTool(name, args, ctx) {
       fs.writeFileSync(f, s.replace(oldT, () => String(args.new_text ?? '')), 'utf8');
       return `已修改 ${rel(f, cwd)}`;
     }
-    case 'run_command':
-      return runCommand(String(args.command || ''), ctx);
+    case 'run_command': {
+      const cmd = String(args.command || '');
+      if (ctx.permission === 'ask' && !(ctx.askUser && (await ctx.askUser({ tool: 'run_command', title: tr('运行命令'), detail: cmd })))) {
+        return '用户没有允许运行这条命令。换个不用运行命令的办法，或者说明为什么需要运行它。';
+      }
+      return runCommand(cmd, ctx);
+    }
   }
 }
 
@@ -280,6 +286,18 @@ function apiUsage(u) {
   return { input: prompt - cached, cacheRead: cached, output: u.completion_tokens ?? u.output_tokens };
 }
 
+// 限流、服务太忙（429、5xx）：等一会儿再发，最多三次；接口说了等多久（Retry-After）就按它，最多等一分钟。
+// 等的时候点停止马上就停。waits 放在外面，测试里可以改短
+const RETRY_STATUS = new Set([429, 500, 502, 503, 504, 529]);
+const retryWaits = [5, 15, 40];
+function pause(s, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal && signal.aborted) return reject(new Error(tr('已中止')));
+    const t = setTimeout(resolve, s * 1000);
+    if (signal) signal.addEventListener('abort', () => (clearTimeout(t), reject(new Error(tr('已中止')))), { once: true });
+  });
+}
+
 async function chat({ url, key, body, signal, emit }) {
   const send = (b) =>
     fetch(url, {
@@ -299,6 +317,16 @@ async function chat({ url, key, body, signal, emit }) {
       delete body.stream_options;
       res = await send(body);
     }
+  }
+  for (let i = 0; !res.ok && RETRY_STATUS.has(res.status) && i < retryWaits.length; i++) {
+    const after = Number(res.headers.get('retry-after'));
+    const s = after > 0 ? Math.min(after, 60) : retryWaits[i];
+    try {
+      await res.arrayBuffer();
+    } catch {}
+    emit({ type: 'status', text: tr('接口太忙，{s} 秒后重试', { s }) });
+    await pause(s, signal);
+    res = await send(body);
   }
   if (!res.ok) {
     let t = '';
@@ -365,12 +393,14 @@ module.exports = {
   },
   stateless: true,
   reportsContext: true,
+  canAsk: true, // 支持「运行命令前问我」
+  retryWaits,
   apiUsage,
   parseDsml,
   detect: async () => ({ installed: true }),
-  run({ agent, cwd, apiMessages, emit }) {
+  run({ agent, cwd, apiMessages, emit, askUser }) {
     const ac = new AbortController();
-    const ctx = { cwd, permission: agent.permission || 'edit', children: new Set() };
+    const ctx = { cwd, permission: agent.permission || 'edit', children: new Set(), askUser };
     const api = agent.api || {};
     const cancel = () => {
       ac.abort();

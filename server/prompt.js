@@ -123,6 +123,7 @@ function changedFiles(m) {
 }
 
 function renderMsg(m, selfId, perMsg = 12000) {
+  if (m.kind === 'system') return `[#${m.seq}] 系统：\n${String(m.members || m.text || '').trim()}`;
   let who;
   if (m.from === 'user') who = '用户';
   else if (m.kind === 'review') who = m.review && m.review.decision === 'approve' ? '自动审查（审查模型代用户答复，按用户的答复对待）' : '自动审查（已转交用户确认）';
@@ -132,6 +133,9 @@ function renderMsg(m, selfId, perMsg = 12000) {
   // 用户附上的文件和文件夹：项目外的已经复制进项目文件夹了，都按这里的相对路径读
   const atts = Array.isArray(m.attachments) ? m.attachments : [];
   if (atts.length) text += `${text ? '\n' : ''}（附件，路径相对项目文件夹：${atts.map((a) => a.path + (a.kind === 'dir' ? '（文件夹）' : '')).join('、')}）`;
+  // 编辑重发：新的那条写明替换了哪一条，原来那条写明后来改了
+  if (m.replaces) text = `（用户修改了 #${m.replacesSeq} 那条消息，以这一条为准）\n` + text;
+  if (m.editedBy) text += `${text ? '\n' : ''}（用户后来修改了这条消息，见 #${m.editedSeq}，以修改后的为准）`;
   if (m.status === 'error') text += `${text ? '\n' : ''}（这一轮运行出错：${oneLine(m.error, 300)}）`;
   if (m.status === 'stopped') text += `${text ? '\n' : ''}（这一轮被用户中止了）`;
   // 下面几行是系统按实际文件核对出来的（见 orchestrator.js 的 delivery），协议里告诉了成员以这个为准
@@ -169,7 +173,13 @@ function turnInstruction(room, agent, trigger) {
     .filter((a) => a.id !== agent.id)
     .map((a) => '@' + a.name)
     .join(' ');
-  const why = trigger && trigger.byName ? `${trigger.byName === '用户' ? '用户' : trigger.byName} 在 #${trigger.seq} 里 @ 了你。` : '';
+  // 重新回答：用户点了你某条回复上的「重新回答」
+  const why =
+    trigger && trigger.again
+      ? `用户希望你重新回答你在 #${trigger.again} 的那条回复：再想一想，换个思路重新做一遍（那条回复还在群聊里，不用重复它说过的话）。`
+      : trigger && trigger.byName
+        ? `${trigger.byName === '用户' ? '用户' : trigger.byName} 在 #${trigger.seq} 里 @ 了你。`
+        : '';
   // 全权代理每一轮都提醒（有会话记忆的成员只在第一轮看到完整的协作规则，中途改了设置也要知道）
   const ask = approvalMode(room) === 'full' ? '用户授权你们全权处理，自己拿主意，只有缺少只有用户能提供的东西时才 @用户' : '需要用户决定就 @用户';
   return [
@@ -181,7 +191,8 @@ function turnInstruction(room, agent, trigger) {
   ].join('\n');
 }
 
-const visible = (m) => m.kind !== 'system';
+// 系统提示一般不给成员看；要成员知道的（比如用户撤销了某一轮的改动，文件改回去了）带着 members，写给成员的话在那里
+const visible = (m) => m.kind !== 'system' || !!m.members;
 
 // 命令行类 AI（有自己的会话记忆）：第一次给完整协议和历史，之后只给新消息。
 // skillText：这一轮用户要求使用的技能说明（见 skills.js），放在「轮到你」之前

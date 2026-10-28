@@ -119,6 +119,14 @@
         openai: tr('能读写项目文件，不能运行命令'),
       },
     },
+    // 运行命令前问我：只有能在运行时问你的工具有这一项（Claude Code、API 模型）
+    ask: {
+      label: tr('运行命令前问我'),
+      desc: {
+        claude: tr('能直接改项目文件；要运行命令、上网时先问你，你点允许才做（Claude Code 自己认定安全的只读命令不问）'),
+        openai: tr('能读写项目文件；每次运行命令前先问你，你点允许才运行'),
+      },
+    },
     full: {
       label: tr('完全权限'),
       desc: {
@@ -220,6 +228,7 @@
     arrowDown: I('<path d="M8 3v9.6M3.8 8.6L8 12.8l4.2-4.2"/>'),
     stopSq: I('<rect x="4.5" y="4.5" width="7" height="7" rx="1.4" fill="currentColor" stroke="none"/>'),
     gauge: I('<path d="M2.6 11.6a5.6 5.6 0 1110.8 0"/><path d="M8 9.6l2.6-3.2"/><circle cx="8" cy="9.8" r=".9"/>'),
+    undo: I('<path d="M5.6 3.6L2.6 6.6l3 3"/><path d="M2.9 6.6h6.3a3.9 3.9 0 010 7.8H6.6"/>'),
     context: I('<circle cx="8" cy="8" r="5.6" opacity=".38"/><path d="M8 2.4a5.6 5.6 0 0 1 4.85 8.4" stroke-width="2"/>'),
     warn: I('<path d="M8 2.4l5.9 10.4H2.1z"/><path d="M8 6.6v2.9M8 11.2v.05"/>'),
     pin: I('<path d="M5.5 2.2h5M6.5 2.2v4L4.2 9.4h7.6L9.5 6.2v-4M8 9.4v4.4"/>'),
@@ -308,6 +317,7 @@
     loading: null,
     catalogs: {}, // 每种接入方式可选的模型和思考强度
     busyRooms: {},
+    askedIds: {}, // 弹过「需要你批准」通知的请求
     notifiedAt: {},
     nav: { list: [], i: -1 }, // 标题栏的后退 / 前进：打开过的项目
   };
@@ -501,16 +511,21 @@
       <button type="button" class="nav-item" data-new-standalone title="${tr('不用选文件夹，直接开始一个会话')}"><span class="nav-ico">${ICONS.plusCircle}</span>${tr('新建会话')}</button>
       <button type="button" class="nav-item" data-new-project><span class="nav-ico">${ICONS.folders}</span>${tr('新建项目')}</button>`;
     const input = $('#projSearch');
-    input.addEventListener('input', () => {
+    // 名字照旧马上筛；打了两个字以上，再去聊天记录里搜（停一下再搜，免得每打一个字搜一次）
+    let hitTimer = null;
+    const onQuery = () => {
       S.projectQuery = input.value.trim().toLowerCase();
       renderProjects();
-    });
+      clearTimeout(hitTimer);
+      if ([...S.projectQuery].length < 2) S.hits = null;
+      else hitTimer = setTimeout(() => searchMessages(S.projectQuery), 250);
+    };
+    input.addEventListener('input', onQuery);
     input.addEventListener('keydown', (e) => {
       if (e.key === 'Escape' && input.value) {
         e.stopPropagation();
         input.value = '';
-        S.projectQuery = '';
-        renderProjects();
+        onQuery();
       }
     });
   }
@@ -596,9 +611,50 @@
         ? `<div class="sec-head"><h2>${tr('项目')}</h2></div>
       ${groups ? `<ul class="proj-list">${groups}</ul>` : `<p class="rail-empty">${q ? tr('没有名字里带这几个字的项目或会话') : tr('还没有项目')}</p>`}`
         : '';
-    box.innerHTML = projects + chats;
+    box.innerHTML = projects + chats + ([...q].length >= 2 ? hitsHtml(q) : '');
     const back = keepSel && box.querySelector(keepSel);
     if (back) back.focus({ preventScroll: true });
+  }
+
+  // 搜索聊天记录（服务端搜所有会话，见 /api/search）：结果列在左边栏最下面，点一下打开那个会话、跳到那条消息
+  async function searchMessages(q) {
+    let hits = { q, results: [], total: 0 };
+    try {
+      const r = await api('GET', `/api/search?q=${encodeURIComponent(q)}`);
+      hits = { q, results: r.results, total: r.total };
+    } catch {}
+    if (S.projectQuery !== q) return;
+    S.hits = hits;
+    renderProjects();
+  }
+
+  function hitsHtml(q) {
+    const head = `<div class="sec-head"><h2>${tr('搜索::消息')}</h2></div>`;
+    const h = S.hits;
+    if (!h || h.q !== q) return `${head}<p class="rail-empty">${tr('正在搜索聊天记录……')}</p>`;
+    if (!h.results.length) return `${head}<p class="rail-empty">${tr('聊天记录里没有找到')}</p>`;
+    const more = h.total > h.results.length ? `<p class="rail-empty">${tr('只列出了最近的 {n} 条，多打几个字能找得更准', { n: h.results.length })}</p>` : '';
+    return `${head}<ul class="hit-list">${h.results
+      .map(
+        (r) => `<li><button type="button" class="hit" data-hit="${r.roomId}" data-hit-seq="${r.seq}" data-hit-id="${esc(r.id)}">
+          <span class="hit-where"><b>${esc(r.room)}</b><span>${esc(r.name || tr('你'))} · ${esc(ago(r.ts))}</span></span>
+          <span class="hit-text">${esc(r.snippet.before)}<mark>${esc(r.snippet.match)}</mark>${esc(r.snippet.after)}</span></button></li>`
+      )
+      .join('')}</ul>${more}`;
+  }
+
+  // 打开搜到的消息：已经在看的会话里有这条就直接跳过去；没有（比较早的）就从那条附近开始重新载入
+  async function openHit(roomId, seq, id) {
+    if (roomId !== S.roomId || !S.messages.some((m) => m.id === id)) await openRoom(roomId, { from: seq });
+    if (S.roomId !== roomId) return;
+    requestAnimationFrame(() => {
+      const n = $(`#transcript .msg[data-id="${CSS.escape(id)}"]`);
+      if (!n) return;
+      n.scrollIntoView({ block: 'center' });
+      n.classList.remove('hit-flash');
+      void n.offsetWidth; // 同一条再点一次也重新闪一下
+      n.classList.add('hit-flash');
+    });
   }
 
   // 会话成员：标题栏里会话名旁边一排头像，点开是成员列表（接入方式、模型、思考强度、正在做什么）
@@ -1065,6 +1121,7 @@
           ? { label: tr('用相同的成员新建会话'), icon: ICONS.plusCircle, run: () => goHome(r.id) }
           : { label: tr('用相同的成员新建会话…'), icon: ICONS.plus, run: () => newConversation(r.projectId, r.id) },
         ...(alone ? [{ label: tr('在文件管理器中打开'), icon: ICONS.open, run: () => api('POST', `/api/rooms/${r.id}/open`).catch((e) => toast(e.message, true)) }] : []),
+        { label: tr('导出为 Markdown…'), icon: ICONS.arrowDown, run: () => exportChat(r.id) },
         '-',
         { label: tr('删除会话'), icon: ICONS.trash, danger: true, run: () => deleteConversation(r) },
       ],
@@ -1100,9 +1157,18 @@
       ...(alone ? [] : [{ label: tr('项目设置…'), icon: ICONS.folder, run: () => projectSettingsModal(S.room.projectId) }]),
       { label: tr('在文件管理器中打开'), icon: ICONS.open, run: () => api('POST', `/api/rooms/${S.roomId}/open`).catch((e) => toast(e.message, true)) },
       { label: alone ? tr('复制文件夹路径') : tr('复制项目文件夹路径'), icon: ICONS.copy, run: () => copyText(S.room.workspace, tr('已复制路径')) },
+      { label: tr('导出为 Markdown…'), icon: ICONS.arrowDown, run: () => exportChat(S.roomId) },
       '-',
       ...PANEL_TABS.map(([id, label, icon]) => ({ label: tr('打开{panel}', { panel: label }), icon: ICONS[icon], run: () => panel.show(id) })),
     ]);
+  }
+
+  // 导出会话：服务端把聊天记录写成 Markdown，按下载处理（桌面版会问存在哪里）
+  function exportChat(id) {
+    const a = el(`<a href="/api/rooms/${encodeURIComponent(id)}/export" download hidden></a>`);
+    document.body.append(a);
+    a.click();
+    a.remove();
   }
 
   function aboutModal() {
@@ -1725,9 +1791,12 @@
     // 你发的消息：靠右的气泡，和 Claude 桌面版一样；附件排在气泡下面
     if (m.from === 'user') {
       const atts = Array.isArray(m.attachments) && m.attachments.length ? attachCards(m.attachments) : '';
-      return el(`<article class="msg user" data-id="${m.id}">
+      // 编辑重发：改好以后作为一条新消息发出，这一条标成「已修改」（成员以新的为准）
+      const editBtn = m.editedBy ? '' : `<button type="button" class="act" data-edit-msg="${m.id}" title="${tr('编辑重发')}" aria-label="${tr('编辑重发')}">${ICONS.edit}</button>`;
+      const edited = m.editedBy ? `<span class="edited-tag">${tr('已修改')}</span>` : m.replaces ? `<span class="edited-tag">${tr('修改后')}</span>` : '';
+      return el(`<article class="msg user${m.editedBy ? ' edited' : ''}" data-id="${m.id}">
         ${m.text ? `<div class="bubble md">${md(m.text)}</div>` : ''}${atts}
-        <div class="foot"><span class="acts">${copyBtn}</span>${time}</div></article>`);
+        <div class="foot"><span class="acts">${copyBtn}${editBtn}</span>${edited}${time}</div></article>`);
     }
     // 成员的发言：上面一行是头像、名字和职责，下面是正文、出错信息、文件卡片、工作过程
     const a = agentById(m.from);
@@ -1754,7 +1823,15 @@
     if (m.meta && m.meta.effort) meta.push(`<span>${esc(tr('思考强度 {effort}', { effort: effortName(m.meta.effort) }))}</span>`);
     if (m.status === 'stopped') meta.push(`<span class="bad">${tr('已中止')}</span>`);
     const retry = a && (m.status === 'error' || m.status === 'stopped') ? `<button type="button" class="btn small" data-poke="${a.id}">${esc(tr('让 {name} 再试一次', { name: a.name }))}</button>` : '';
-    body.append(el(`<div class="foot"><span class="acts">${copyBtn}</span>${meta.join('')}${retry}</div>`));
+    // 重新回答：让它换个思路把这条再做一遍（出错、中止的用上面的「再试一次」）
+    const again =
+      a && m.status === 'done'
+        ? `<button type="button" class="act" data-again="${m.id}" title="${esc(tr('让 {name} 重新回答这一条', { name: a.name }))}" aria-label="${esc(tr('重新回答'))}">${ICONS.refresh}</button>`
+        : '';
+    // 撤销这一轮的改动（记下了改之前的内容的才有）；撤销以后写明，可以恢复
+    const undo = m.undo && !m.undone ? `<button type="button" class="act" data-undo="${m.id}" title="${esc(tr('撤销这一轮的改动'))}" aria-label="${esc(tr('撤销这一轮的改动'))}">${ICONS.undo}</button>` : '';
+    if (m.undone) meta.push(`<span class="undone-tag">${tr('已撤销这一轮的改动')}</span><button type="button" class="link-btn" data-redo="${m.id}">${tr('恢复')}</button>`);
+    body.append(el(`<div class="foot"><span class="acts">${copyBtn}${again}${undo}</span>${meta.join('')}${retry}</div>`));
     return node;
   }
 
@@ -2073,6 +2150,7 @@
             <div class="body">
               <div class="live-status"><span class="now"></span><span class="elapsed" data-since="${p.startedAt}"></span>
                 <button type="button" class="btn small" data-stop>${tr('停止')}</button></div>
+              <div class="ask-card" role="alertdialog" hidden></div>
               <ol class="work-list live-items" hidden></ol>
               <div class="md live-text" hidden></div>
             </div></article>`)
@@ -2088,7 +2166,36 @@
       const txt = live.querySelector('.live-text');
       txt.hidden = !p.live;
       if (p.live) txt.innerHTML = md(p.live);
+      // 运行命令前问我：它想做什么、具体的命令，下面是允许 / 拒绝
+      const card = live.querySelector('.ask-card');
+      const q = p.ask;
+      card.hidden = !q;
+      if (!q) card.dataset.id = '';
+      else if (card.dataset.id !== q.id) {
+        card.dataset.id = q.id;
+        card.innerHTML = `<div class="ask-head">${ICONS.shield}<b>${esc(tr('{name} 想{what}，等你批准', { name, what: askWhat(q) }))}</b></div>
+          ${q.note ? `<p class="ask-note">${esc(q.note)}</p>` : ''}
+          <pre class="ask-detail">${esc(q.detail)}</pre>
+          <div class="ask-acts"><button type="button" class="btn small primary" data-ask-allow="${q.id}">${tr('允许')}</button>
+            <button type="button" class="btn small" data-ask-deny="${q.id}">${tr('拒绝')}</button></div>`;
+      }
     });
+  }
+
+  // 等你批准的是什么操作：运行命令、打开网页、上网搜索，别的写工具名
+  function askWhat(q) {
+    if (/^(Bash|PowerShell|run_command)$/.test(q.tool)) return tr('运行一条命令');
+    if (q.tool === 'WebFetch') return tr('打开一个网页');
+    if (q.tool === 'WebSearch') return tr('上网搜索');
+    return tr('使用 {tool}', { tool: q.title || q.tool });
+  }
+
+  async function answerAsk(id, allow) {
+    try {
+      await api('POST', `/api/rooms/${S.roomId}/ask/${encodeURIComponent(id)}`, { allow });
+    } catch (e) {
+      toast(e.message, true);
+    }
   }
 
   setInterval(() => {
@@ -2279,11 +2386,58 @@
     onComposerInput();
   }
 
+  // 撤销某一轮的改动（redo：恢复）：先问一下，写明会动哪些文件。服务端只动之后没再被改过的文件
+  async function undoTurn(id, redo) {
+    const m = S.messages.find((x) => x.id === id);
+    if (!m || !m.undo || !S.roomId) return;
+    const list = m.undo.files;
+    const names = list.slice(0, 6).map((f) => f.path).join(tr('、')) + (list.length > 6 ? tr(' 等 {n} 个文件', { n: list.length }) : '');
+    const ok = await confirmBox(
+      redo ? tr('恢复 {name} 这一轮的改动？', { name: m.name }) : tr('撤销 {name} 这一轮的改动？', { name: m.name }),
+      redo
+        ? tr('这些文件会改回 {name} 这一轮做完时的样子：{files}。撤销以后又被改过的文件不动。', { name: m.name, files: names })
+        : tr('这一轮改过的文件会恢复成改之前的样子（新建的删掉，改过的改回去，删掉的放回来）：{files}。之后又被改过的文件不动；撤销以后还能点「恢复」改回来。', { files: names }),
+      redo ? tr('恢复') : tr('撤销改动')
+    );
+    if (!ok) return;
+    try {
+      const r = await api('POST', `/api/rooms/${S.roomId}/messages/${id}/undo`, redo ? { redo: true } : {});
+      const n = r.done.length;
+      toast((redo ? tr('已恢复 {n} 个文件', { n }) : tr('已撤销 {n} 个文件的改动', { n })) + (r.skipped.length ? tr('，{k} 个没有动（之后又被改过，或者太大没存）', { k: r.skipped.length }) : ''));
+    } catch (e) {
+      toast(e.message, true);
+    }
+  }
+
+  // 编辑重发：把那条消息的文字放回输入框（附件发的时候服务端会一起带过来），输入框上方写明在编辑
+  function startEdit(id) {
+    const m = S.messages.find((x) => x.id === id);
+    if (!m || !S.roomId) return;
+    S.editing = { roomId: S.roomId, id };
+    setText(m.text || '');
+    const input = inputEl();
+    if (input) {
+      input.focus();
+      caretToEnd(input);
+    }
+    renderComposerState();
+    updateSendBtn();
+  }
+  function stopEdit() {
+    S.editing = null;
+    renderComposerState();
+  }
+
   function renderComposerState() {
     const st = S.state || {};
     const banner = $('#banner');
     if (banner) {
-      if (st.review) {
+      if (S.editing && S.editing.roomId === S.roomId) {
+        banner.hidden = false;
+        banner.classList.remove('error');
+        banner.innerHTML = `<span class="grow">${tr('编辑重发：改好后发出，原来那条会标成「已修改」，成员以新的为准。')}</span>
+          <button class="btn small" data-edit-cancel>${tr('取消')}</button>`;
+      } else if (st.review) {
         // 自动执行：审查模型正在看成员要你确认的事，看完再决定是代你答复还是交给你
         banner.hidden = false;
         banner.classList.remove('error');
@@ -2716,6 +2870,7 @@
     if (atts.some((a) => a.pending)) return toast(tr('附件还在添加，等一下再发'), true);
     if (!text && !atts.length) return;
     if (!roomId) return sendFromHome(text, atts);
+    const editing = S.editing && S.editing.roomId === roomId ? S.editing.id : '';
     el.innerHTML = '';
     S.drafts[roomId] = '';
     S.attach[roomId] = [];
@@ -2724,7 +2879,8 @@
     closePop();
     try {
       const attachments = atts.map(({ path, name, kind, size, count, from }) => ({ path, name, kind, size, count, from }));
-      const msg = await api('POST', `/api/rooms/${roomId}/messages`, { text, attachments });
+      const msg = await api('POST', `/api/rooms/${roomId}/messages`, { text, attachments, ...(editing ? { replaces: editing } : {}) });
+      if (editing && S.editing && S.editing.id === editing) stopEdit();
       if (roomId === S.roomId) {
         addMessage(msg);
         scrollToBottom();
@@ -3043,7 +3199,8 @@
   async function openRoom(id, opts = {}) {
     S.loading = id;
     try {
-      const data = await api('GET', `/api/rooms/${id}`);
+      // from：从搜索结果跳过来，从那条消息附近开始载入（见 openHit）
+      const data = await api('GET', `/api/rooms/${id}${opts.from ? `?from=${opts.from}` : ''}`);
       if (S.loading !== id) return;
       if (!opts.fromHistory && S.roomId !== id) {
         // 像浏览器一样：从中间位置打开新项目，后面的「前进」记录就不要了
@@ -3053,6 +3210,7 @@
         S.nav.i = S.nav.list.length - 1;
       }
       closeMembersPop();
+      if (S.roomId !== id) S.editing = null;
       S.roomId = id;
       S.room = data.room;
       S.home = null;
@@ -3764,8 +3922,11 @@
       $('#mm-body-wrap', body).hidden = ad !== 'openai';
       $('#mm-ctx-wrap', body).hidden = ad !== 'openai';
       renderModel();
-      const cur = permNow();
+      // 只列这种工具有的权限（「运行命令前问我」只有 Claude Code 和 API 模型有）；原来选的这种工具没有，就回到可改文件
+      const has = (id) => !!(PERMS[id] && PERMS[id].desc[ad]);
+      const cur = has(permNow()) ? permNow() : 'edit';
       $('#mm-perms', body).innerHTML = Object.entries(PERMS)
+        .filter(([id]) => has(id))
         .map(
           ([id, p]) =>
             `<label class="choice"><input type="radio" name="mm-perm" value="${id}" ${cur === id ? 'checked' : ''}><b>${p.label}</b><span>${esc(p.desc[ad])}</span></label>`
@@ -4283,7 +4444,7 @@
   // ---------- 点击 ----------
   document.addEventListener('click', async (e) => {
     const t = e.target.closest(
-      '[data-room],[data-new-project],[data-new-standalone],[data-add-member],[data-agent],[data-at],[data-refresh-env],[data-settings],[data-open-folder],[data-stop],[data-continue],[data-work],[data-poke],[data-example],[data-tb],[data-tb-panel],[data-pick],[data-file-open],[data-file-menu],[data-file-link],[data-files-more],[data-copy-msg],[data-copy-code],[data-acct],[data-acct-tools],[data-update],[data-to-pick],[data-proj-toggle],[data-new-chat],[data-proj-menu],[data-chat-menu],[data-members],[data-accept-vote],[data-accept-clean],[data-dir-open],[data-att-remove],#jump'
+      '[data-room],[data-hit],[data-ask-allow],[data-ask-deny],[data-again],[data-edit-msg],[data-edit-cancel],[data-undo],[data-redo],[data-new-project],[data-new-standalone],[data-add-member],[data-agent],[data-at],[data-refresh-env],[data-settings],[data-open-folder],[data-stop],[data-continue],[data-work],[data-poke],[data-example],[data-tb],[data-tb-panel],[data-pick],[data-file-open],[data-file-menu],[data-file-link],[data-files-more],[data-copy-msg],[data-copy-code],[data-acct],[data-acct-tools],[data-update],[data-to-pick],[data-proj-toggle],[data-new-chat],[data-proj-menu],[data-chat-menu],[data-members],[data-accept-vote],[data-accept-clean],[data-dir-open],[data-att-remove],#jump'
     );
     // 成员面板开着时，点到面板外面就收起
     if ($('#membersPop') && !e.target.closest('#membersPop') && !e.target.closest('[data-members]')) closeMembersPop();
@@ -4294,8 +4455,16 @@
     const d = t.dataset;
     try {
       if (d.room) return openRoom(d.room);
+      if (d.hit) return openHit(d.hit, Number(d.hitSeq), d.hitId);
       if ('newProject' in d) return newProjectModal();
       if ('newStandalone' in d) return goHome(); // 新建会话：回到主界面，发第一条消息时才建
+      if (d.again) return api('POST', `/api/rooms/${S.roomId}/messages/${d.again}/again`).catch((e) => toast(e.message, true));
+      if (d.editMsg) return startEdit(d.editMsg);
+      if ('editCancel' in d) return stopEdit();
+      if (d.askAllow) return answerAsk(d.askAllow, true);
+      if (d.askDeny) return answerAsk(d.askDeny, false);
+      if (d.undo) return undoTurn(d.undo, false);
+      if (d.redo) return undoTurn(d.redo, true);
       if (d.projToggle) return toggleProject(d.projToggle);
       if (d.newChat) return newConversation(d.newChat, S.room && S.room.projectId === d.newChat ? S.roomId : null);
       if (d.projMenu) {
@@ -4478,6 +4647,12 @@
     // 右侧面板：侧边对话和终端
     for (const name of ['side-message', 'side-progress', 'side-cleared', 'term', 'term-exit']) on(name, (data) => panel.onEvent(name, data));
     on('progress', (p) => {
+      const q = p.running && p.running.ask;
+      if (q && S.askedIds[q.id] !== true) {
+        S.askedIds[q.id] = true;
+        const a = p.roomId === S.roomId ? agentById(p.running.agentId) : null;
+        notify(p.roomId, tr('需要你批准'), tr('{room}：{name} 想{what}', { room: roomName(p.roomId), name: a ? a.name : tr('成员'), what: askWhat(q) }));
+      }
       if (p.roomId !== S.roomId) return;
       S.progress = p.running;
       renderLive();

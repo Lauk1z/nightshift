@@ -122,6 +122,25 @@ test('后续提示词：只有新消息，不含自己的发言', () => {
   assert.match(p, /\[#4\] Claude/);
 });
 
+test('导出会话：写成给人看的 Markdown，谁、什么时候、模型、用时、附件、改了哪些文件、出错都写上', () => {
+  const { exportMarkdown, exportName } = require('../server/export');
+  const room = { name: '做待办/清单:网页', workspace: 'E:\\todo', agents: [{ id: 'c', name: 'Claude', role: '开发', adapter: 'claude', model: 'opus' }] };
+  const ts = new Date(2026, 9, 28, 14, 3).getTime();
+  const md = exportMarkdown(room, { name: '待办清单', standalone: false }, [
+    { seq: 1, kind: 'user', from: 'user', name: '用户', ts, text: '做一个待办清单', attachments: [{ path: '.agentchat/attachments/x/截图.png', kind: 'file' }, { path: 'docs', kind: 'dir' }] },
+    { seq: 2, kind: 'agent', from: 'c', name: 'Claude', role: '开发', ts: ts + 60000, text: '做好了', files: [{ path: 'index.html', change: 'add' }, { path: 'a.js', change: 'update' }], meta: { model: 'claude-opus-5-5', ms: 125000 } },
+    { seq: 3, kind: 'system', from: 'system', ts, text: '已经自动接力 10 轮' },
+    { seq: 4, kind: 'agent', from: 'c', name: 'Claude', ts, status: 'error', error: 'boom', text: '' },
+  ]);
+  const has = (s) => assert.ok(md.includes(s), '导出里应该有：' + s + '\n实际：\n' + md);
+  assert.ok(md.startsWith('# 做待办/清单:网页\n\n- 项目：待办清单（E:\\todo）\n- 成员：Claude（开发，Claude Code · opus）\n- 导出于 2'));
+  has('**你** · 2026-10-28 14:03\n\n做一个待办清单\n\n附件：`.agentchat/attachments/x/截图.png`、`docs/`');
+  has('**Claude（开发）** · 2026-10-28 14:04 · claude-opus-5-5 · 用时 2 分 5 秒\n\n做好了\n\n改动的文件：`index.html`（新建）、`a.js`（修改）');
+  has('\n> 已经自动接力 10 轮\n');
+  has('> 出错了：boom');
+  assert.strictEqual(exportName(room), '做待办-清单-网页.md');
+});
+
 test('API 消息：角色交替、以用户消息结尾', () => {
   const room = fakeRoom();
   const msgs = buildApiMessages({ room, agent: room.agents[0], messages: MSGS });
@@ -263,6 +282,303 @@ test('上下文：成员每轮结束时上下文用了多少，记在会话里�
   assert.strictEqual(room.context.c, undefined, '已经过时，不记');
   assert.deepStrictEqual(events.filter((e) => e.event === 'context').map((e) => e.data.agentId).sort(), ['a', 'b']);
   assert.strictEqual(new Store(path.join(dir, 'data')).getRoom(room.id).context.a.used, 1200, '存进了会话的文件');
+});
+
+test('接口太忙：还什么都没做的一轮等一会儿自动重试；额度用完的、做到一半出错的不重试，停止就不等了', async () => {
+  const calls = {};
+  adapters.register({
+    id: 'busyfake',
+    label: 'BusyFake',
+    run({ agent, emit }) {
+      const n = (calls[agent.id] = (calls[agent.id] || 0) + 1);
+      let out;
+      if (agent.id === 'a') out = n <= 2 ? { error: '接口返回 429：Too Many Requests' } : { text: '好了' };
+      else if (agent.id === 'q') out = { error: 'You exceeded your current quota (429)' };
+      else {
+        emit({ type: 'tool', item: { id: 't', k: 'cmd', n: 'Bash', d: 'npm test', s: 'ok' } });
+        out = { error: '503 Service Unavailable' };
+      }
+      return { done: new Promise((r) => setTimeout(() => r(out), 5)), cancel() {} };
+    },
+  });
+  const dir = tmp();
+  const ws = path.join(dir, 'ws');
+  fs.mkdirSync(ws);
+  const store = new Store(path.join(dir, 'data'));
+  const events = [];
+  const orch = new Orchestrator(store, { send: (event, data) => events.push({ event, data }) });
+  orch.retryWaits = [0.02, 0.02, 0.02];
+  const mk = (ids) => store.createRoom({ name: 't', workspace: ws, agents: ids.map((id) => ({ id, name: id.toUpperCase(), adapter: 'busyfake', enabled: true })) });
+  const room = mk(['a']);
+  orch.postUser(room.id, '@A 做一下');
+  await idle(orch, room.id);
+  const last = store.messages(room.id).filter((m) => m.kind === 'agent');
+  assert.deepStrictEqual([last.length, last[0].status, calls.a], [1, 'done', 3], '前两次 429，第三次成功，只留下成功的那条');
+  assert.ok(events.some((e) => e.event === 'progress' && e.data.running && /接口太忙，0\.02 秒后自动重试（第 1 次）/.test(e.data.running.status)));
+  const r2 = mk(['q', 'w']);
+  orch.postUser(r2.id, '@Q 看看');
+  await idle(orch, r2.id);
+  assert.strictEqual(calls.q, 1, '额度用完了，不重试');
+  orch.postUser(r2.id, '@W 跑一下测试');
+  await idle(orch, r2.id);
+  assert.strictEqual(calls.w, 1, '做到一半出错的不重试（重来会重复做）');
+  // 等的时候点停止：不再重试
+  calls.a = -100;
+  orch.retryWaits = [5];
+  const r3 = mk(['a']);
+  orch.postUser(r3.id, '@A 再做一下');
+  for (let i = 0; i < 200 && !(orch.rt(r3.id).running && /自动重试/.test(orch.rt(r3.id).running.status || '')); i++) await new Promise((r) => setTimeout(r, 10));
+  orch.stop(r3.id);
+  await idle(orch, r3.id);
+  assert.strictEqual(calls.a, -99, '停止以后没有再试');
+  assert.strictEqual(store.messages(r3.id).filter((m) => m.kind === 'agent')[0].status, 'stopped');
+});
+
+test('API 模型：接口返回 429、5xx 时等一会儿再发（Retry-After 说了就按它）', async () => {
+  let n = 0;
+  const srv = http.createServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      n++;
+      if (n === 1) {
+        res.writeHead(429, { 'retry-after': '0.05', 'content-type': 'application/json' });
+        return res.end('{"error":{"message":"rate limited"}}');
+      }
+      if (n === 2) {
+        res.writeHead(503);
+        return res.end('busy');
+      }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ choices: [{ message: { content: '好了' }, finish_reason: 'stop' }] }));
+    });
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  const api = adapters.get('openai');
+  const keep = api.retryWaits.splice(0, api.retryWaits.length, 0.02, 0.02, 0.02);
+  const events = [];
+  try {
+    const out = await api.run({
+      agent: { name: 'DS', model: 'm', permission: 'readonly', api: { baseUrl: `http://127.0.0.1:${srv.address().port}/v1`, tools: false } },
+      cwd: tmp(),
+      apiMessages: [{ role: 'user', content: 'u' }],
+      emit: (e) => events.push(e),
+    }).done;
+    assert.deepStrictEqual([out.error, out.text, n], [undefined, '好了', 3]);
+    assert.ok(events.some((e) => e.type === 'status' && /接口太忙，0\.05 秒后重试/.test(e.text)), 'Retry-After 说了等多久就按它');
+  } finally {
+    api.retryWaits.splice(0, api.retryWaits.length, ...keep);
+    srv.close();
+  }
+});
+
+test('重新回答：成员把它的某一条回复再做一遍，提示词里写明是哪一条；原来那条留着', async () => {
+  const prompts = [];
+  const { store, orch, room, events } = setupRoom((agent, prompt) => {
+    prompts.push(prompt);
+    return agent.name === 'GPT' ? `方案 ${prompts.length}` : '好的';
+  });
+  orch.postUser(room.id, '@GPT 出个方案');
+  await idle(orch, room.id);
+  const first = store.messages(room.id).find((m) => m.kind === 'agent');
+  orch.again(room.id, first.id);
+  await idle(orch, room.id);
+  const replies = store.messages(room.id).filter((m) => m.kind === 'agent');
+  assert.deepStrictEqual(replies.map((m) => m.text), ['方案 1', '方案 2']);
+  assert.match(prompts[1], new RegExp(`用户希望你重新回答你在 #${first.seq} 的那条回复`));
+  assert.ok(store.messages(room.id).some((m) => m.kind === 'system' && m.text === `你让 GPT 重新回答 #${first.seq} 那条`));
+  assert.ok(events.some((e) => e.event === 'message' && e.data.message.text === '方案 2'));
+  assert.throws(() => orch.again(room.id, 'nope'), /消息不存在/);
+});
+
+test('编辑重发：新消息写明替换了哪一条，原来那条标成「已修改」，成员以新的为准', async () => {
+  const prompts = [];
+  const { store, orch, room, events } = setupRoom((agent, prompt) => {
+    prompts.push(prompt);
+    return '收到';
+  });
+  const old = orch.postUser(room.id, '@GPT 做个蓝色的按钮');
+  await idle(orch, room.id);
+  const msg = orch.postUser(room.id, '@GPT 做个绿色的按钮', [], { replaces: old.id });
+  await idle(orch, room.id);
+  assert.deepStrictEqual([msg.replaces, msg.replacesSeq], [old.id, old.seq]);
+  const was = store.messages(room.id).find((m) => m.id === old.id);
+  assert.deepStrictEqual([was.editedBy, was.editedSeq], [msg.id, msg.seq]);
+  assert.ok(events.some((e) => e.event === 'message-update' && e.data.message.id === old.id && e.data.message.editedBy === msg.id));
+  // GPT 有会话记忆，第二轮只收到新消息：写明它替换了哪一条
+  assert.match(prompts[1], new RegExp(`（用户修改了 #${old.seq} 那条消息，以这一条为准）\\n@GPT 做个绿色的按钮`));
+  assert.throws(() => orch.postUser(room.id, '再改', [], { replaces: 'nope' }), /要修改的消息不存在/);
+});
+
+test('撤销某一轮的改动：新建的删掉、改过的改回去、删掉的放回来；恢复再改回去；之后又被改过的、太大的不动', () => {
+  const { Checkpoints, MAX_FILE } = require('../server/checkpoints');
+  const files = require('../server/files');
+  const ws = tmp();
+  const cp = new Checkpoints(path.join(tmp(), 'checkpoints'));
+  const w = (p, s) => {
+    fs.mkdirSync(path.dirname(path.join(ws, p)), { recursive: true });
+    fs.writeFileSync(path.join(ws, p), s);
+  };
+  const r = (p) => (fs.existsSync(path.join(ws, p)) ? fs.readFileSync(path.join(ws, p), 'utf8') : null);
+  w('a.txt', '一');
+  w('src/b.txt', '二');
+  w('big.bin', Buffer.alloc(MAX_FILE + 1, 1));
+  const before = files.snapshot(ws);
+  const saved = cp.backup('p1', ws, before);
+  assert.deepStrictEqual(Object.keys(saved).sort(), ['a.txt', 'src/b.txt'], '太大的不存');
+  // 这一轮：改 a、删 b、新建 c、改大文件
+  const later = Date.now() + 5000;
+  w('a.txt', '一一');
+  fs.rmSync(path.join(ws, 'src/b.txt'));
+  w('docs/c.txt', '三');
+  w('big.bin', Buffer.alloc(MAX_FILE + 1, 2));
+  for (const p of ['a.txt', 'docs/c.txt', 'big.bin']) fs.utimesSync(path.join(ws, p), later / 1000, later / 1000);
+  const after = files.snapshot(ws);
+  const rec = cp.record('p1', ws, files.diff(before, after, ws, Infinity), saved);
+  assert.deepStrictEqual(
+    rec.files.map((e) => [e.path, e.change, !!e.before, !!e.after, !!e.big]),
+    [
+      ['docs/c.txt', 'add', false, true, false],
+      ['a.txt', 'update', true, true, false],
+      ['big.bin', 'update', false, false, true],
+      ['src/b.txt', 'delete', true, false, false],
+    ]
+  );
+  // 撤销
+  const u = cp.apply('p1', ws, rec, 'before');
+  assert.deepStrictEqual(u.done.sort(), ['a.txt', 'docs/c.txt', 'src/b.txt']);
+  assert.deepStrictEqual(u.skipped, [{ path: 'big.bin', why: 'big' }]);
+  assert.deepStrictEqual([r('a.txt'), r('src/b.txt'), r('docs/c.txt')], ['一', '二', null]);
+  // 恢复：撤销以后又改了 a，a 不动，别的照样恢复
+  w('a.txt', '我自己改的');
+  const back = cp.apply('p1', ws, rec, 'after');
+  assert.deepStrictEqual(back.done.sort(), ['docs/c.txt', 'src/b.txt']);
+  assert.deepStrictEqual(back.skipped.map((x) => [x.path, x.why]), [['a.txt', 'changed'], ['big.bin', 'big']]);
+  assert.deepStrictEqual([r('a.txt'), r('src/b.txt'), r('docs/c.txt')], ['我自己改的', null, '三']);
+  // 再来一轮：没变的文件按修改时间和大小认出来，不用再读
+  const again = cp.backup('p1', ws, files.snapshot(ws));
+  assert.strictEqual(again['docs/c.txt'], rec.files[0].after);
+  // 清理：没人用、放了一小时以上的内容删掉；用着的留着；项目没了整个删掉
+  const blob = (h) => cp.blobPath('p1', h);
+  const old = (Date.now() - 2 * 3600e3) / 1000;
+  const loose = cp.put('p1', Buffer.from('没人用'));
+  for (const h of [loose, rec.files[1].before]) fs.utimesSync(blob(h), old, old);
+  fs.mkdirSync(path.join(cp.dir, 'gone'), { recursive: true });
+  cp.gc({ p1: new Set([rec.files[1].before]) });
+  assert.ok(!fs.existsSync(blob(loose)));
+  assert.ok(fs.existsSync(blob(rec.files[1].before)));
+  assert.ok(!fs.existsSync(path.join(cp.dir, 'gone')));
+});
+
+test('撤销：成员每一轮改了哪些文件、改之前和改之后的内容记在它的消息上', async () => {
+  const { Checkpoints } = require('../server/checkpoints');
+  adapters.register({
+    id: 'writer',
+    label: 'Writer',
+    run({ cwd }) {
+      fs.writeFileSync(path.join(cwd, 'index.html'), '<h1>新的</h1>');
+      return { done: Promise.resolve({ text: '写好了', sessionId: 's-w' }), cancel() {} };
+    },
+  });
+  const dir = tmp();
+  const ws = path.join(dir, 'ws');
+  fs.mkdirSync(ws);
+  fs.writeFileSync(path.join(ws, 'index.html'), '<h1>旧的</h1>');
+  fs.utimesSync(path.join(ws, 'index.html'), (Date.now() - 60000) / 1000, (Date.now() - 60000) / 1000);
+  const store = new Store(path.join(dir, 'data'));
+  const orch = new Orchestrator(store, { send() {} });
+  orch.checkpoints = new Checkpoints(path.join(dir, 'data', 'checkpoints'));
+  const room = store.createRoom({ name: 't', workspace: ws, agents: [{ id: 'w', name: 'W', adapter: 'writer', enabled: true }] });
+  orch.postUser(room.id, '@W 改一下首页');
+  await idle(orch, room.id);
+  const m = store.messages(room.id).find((x) => x.kind === 'agent');
+  assert.deepStrictEqual(m.undo.files.map((e) => [e.path, e.change]), [['index.html', 'update']]);
+  const u = orch.checkpoints.apply(room.projectId, ws, m.undo, 'before');
+  assert.deepStrictEqual(u.done, ['index.html']);
+  assert.strictEqual(fs.readFileSync(path.join(ws, 'index.html'), 'utf8'), '<h1>旧的</h1>');
+});
+
+test('运行命令前问我：成员停下来等你批准，允许了接着做；停止接力就当拒绝；一个请求只能回答一次', async () => {
+  const answers = [];
+  adapters.register({
+    id: 'askfake',
+    label: 'AskFake',
+    canAsk: true,
+    run({ agent, askUser }) {
+      const done = (async () => {
+        const ok = await askUser({ tool: 'Bash', title: 'Bash', detail: 'npm test', note: '跑一下测试' });
+        answers.push(ok);
+        return { text: ok ? '测试过了' : '没让跑', sessionId: 's-' + agent.id };
+      })();
+      return { done, cancel() {} };
+    },
+  });
+  const dir = tmp();
+  const ws = path.join(dir, 'ws');
+  fs.mkdirSync(ws);
+  const store = new Store(path.join(dir, 'data'));
+  const events = [];
+  const orch = new Orchestrator(store, { send: (event, data) => events.push({ event, data }) });
+  const room = store.createRoom({ name: 't', workspace: ws, agents: [{ id: 'a', name: 'A', adapter: 'askfake', permission: 'ask', enabled: true }] });
+  const waitAsk = async () => {
+    for (let i = 0; i < 200; i++) {
+      const p = orch.progress(room.id).running;
+      if (p && p.ask) return p.ask;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    throw new Error('没有等批准');
+  };
+  orch.postUser(room.id, '@A 跑一下测试');
+  const q = await waitAsk();
+  assert.deepStrictEqual([q.tool, q.detail, q.note], ['Bash', 'npm test', '跑一下测试']);
+  assert.strictEqual(orch.progress(room.id).running.status, '等你批准');
+  assert.ok(events.some((e) => e.event === 'progress' && e.data.running && e.data.running.ask && e.data.running.ask.id === q.id), '推给界面');
+  orch.answer(room.id, q.id, true);
+  assert.throws(() => orch.answer(room.id, q.id, false), /这个请求已经处理过了/);
+  await idle(orch, room.id);
+  assert.deepStrictEqual(answers, [true]);
+  assert.strictEqual(store.messages(room.id).filter((m) => m.kind === 'agent').pop().text, '测试过了');
+  // 等批准的时候停止：当成拒绝
+  orch.postUser(room.id, '@A 再跑一次');
+  await waitAsk();
+  orch.stop(room.id);
+  await idle(orch, room.id);
+  assert.deepStrictEqual(answers, [true, false]);
+});
+
+test('运行命令前问我：API 模型每次运行命令前问你，不允许就把这件事告诉模型', async () => {
+  let n = 0;
+  const toolResults = [];
+  const srv = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (d) => (body += d));
+    req.on('end', () => {
+      const j = JSON.parse(body);
+      n++;
+      res.writeHead(200, { 'content-type': 'application/json' });
+      if (n === 1) {
+        assert.ok(j.tools.some((t) => t.function.name === 'run_command'), '这一档能运行命令');
+        return res.end(JSON.stringify({ choices: [{ message: { content: '', tool_calls: [{ id: 'c1', type: 'function', function: { name: 'run_command', arguments: '{"command":"npm test"}' } }] }, finish_reason: 'tool_calls' }] }));
+      }
+      toolResults.push(j.messages.find((m) => m.role === 'tool').content);
+      res.end(JSON.stringify({ choices: [{ message: { content: '好吧' }, finish_reason: 'stop' }] }));
+    });
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  const asked = [];
+  try {
+    const out = await adapters.get('openai').run({
+      agent: { name: 'DS', model: 'm', permission: 'ask', api: { baseUrl: `http://127.0.0.1:${srv.address().port}/v1` } },
+      cwd: tmp(),
+      apiMessages: [{ role: 'user', content: 'u' }],
+      emit: () => {},
+      askUser: async (q) => (asked.push(q), false),
+    }).done;
+    assert.strictEqual(out.text, '好吧');
+    assert.deepStrictEqual(asked.map((q) => [q.tool, q.detail]), [['run_command', 'npm test']]);
+    assert.match(toolResults[0], /用户没有允许运行这条命令/);
+  } finally {
+    srv.close();
+  }
 });
 
 test('没 @ 人时交给默认成员', async () => {
@@ -1853,7 +2169,7 @@ test('设置和用量接口；换了语言，服务端的报错和 boot.js 跟�
           let buf = '';
           res.setEncoding('utf8');
           res.on('data', (c) => (buf += c));
-          res.on('end', () => resolve({ status: res.statusCode, text: buf, json: () => JSON.parse(buf) }));
+          res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, text: buf, json: () => JSON.parse(buf) }));
         }
       );
       req.on('error', reject);
@@ -1996,6 +2312,24 @@ test('设置和用量接口；换了语言，服务端的报错和 boot.js 跟�
     assert.strictEqual((await looseOf()).length, loose, '出错时不留下空会话');
     for (const c of [allChat, src, picked]) await call('DELETE', `/api/rooms/${c.id}`);
     await call('POST', `/api/rooms/${chat.id}/messages`, { text: '@DS 随便问问：正则怎么匹配邮箱' });
+    // 导出会话：Markdown，当成下载，文件名是会话名（这时界面是英文）
+    const ex = await call('GET', `/api/rooms/${chat.id}/export`);
+    assert.ok(ex.headers['content-type'].startsWith('text/markdown'));
+    assert.ok(/^attachment; .*filename\*=UTF-8''.+\.md$/.test(ex.headers['content-disposition']));
+    assert.ok(ex.text.startsWith('# '));
+    assert.ok(/\*\*You\*\* · \d{4}-\d\d-\d\d \d\d:\d\d\n\n@DS 随便问问：正则怎么匹配邮箱/.test(ex.text), ex.text);
+    // 搜索聊天记录：所有会话里不分大小写地找，新的在前，带一小段上下文；少于两个字不搜
+    const found = (await call('GET', `/api/search?q=${encodeURIComponent('正则')}`)).json();
+    assert.deepStrictEqual(
+      found.results.map((r) => [r.roomId, r.snippet.before, r.snippet.match, r.snippet.after]),
+      [[chat.id, '@DS 随便问问：', '正则', '怎么匹配邮箱']]
+    );
+    assert.strictEqual((await call('GET', `/api/search?q=${encodeURIComponent('首页的按钮')}`)).json().results[0].roomId, second.id, '别的会话里的也找得到');
+    assert.strictEqual((await call('GET', '/api/search?q=DS')).json().total, 2, '不分大小写');
+    assert.deepStrictEqual((await call('GET', '/api/search?q=x')).json(), { results: [], total: 0 });
+    // 从搜到的消息打开会话：从那条前面几条开始给
+    const at = (await call('GET', `/api/rooms/${chat.id}?from=${found.results[0].seq}`)).json();
+    assert.ok(at.messages.some((m) => m.id === found.results[0].id));
     const cp = (await looseOf()).find((p) => p.id === chat.projectId);
     assert.deepStrictEqual([cp.name, cp.rooms.map((r) => r.id)], ['随便问问：正则怎么匹配邮箱', [chat.id]]);
     // 排的是它们各自占的项目：新建的在最上面；置顶、取消置顶时放到最上面；拖动以后按拖的顺序
@@ -2139,6 +2473,10 @@ if (args.includes('--input-format')) {
       if (j && j.type === 'user' && !started) {
         started = true;
         for (const l of sc.lines || []) process.stdout.write(l + '\\n');
+        // 要批准的工具：先问，等回答了再吐 after
+        if (sc.ask) process.stdout.write(JSON.stringify({ type: 'control_request', request_id: 'perm-1', request: sc.ask }) + '\\n');
+      } else if (j && j.type === 'control_response' && j.response && j.response.request_id === 'perm-1') {
+        for (const l of sc.after || []) process.stdout.write(l + '\\n');
       } else if (j && j.type === 'control_request') {
         const response = sc.control ? { subtype: 'success', request_id: j.request_id, response: sc.control } : { subtype: 'error', request_id: j.request_id, error: 'not supported' };
         process.stdout.write(JSON.stringify({ type: 'control_response', response }) + '\\n');
@@ -2177,14 +2515,15 @@ if (!args.includes('--input-format')) process.stdin.on('end', () => {
   return dir;
 }
 
-async function runFake(adapterId, { help, lines = [], exit = 0, stderr = '', failIf, failText, control, agent = {}, sessionId = null, prompt = '你好' }) {
+async function runFake(adapterId, { help, lines = [], exit = 0, stderr = '', failIf, failText, control, ask, after, askUser, agent = {}, sessionId = null, prompt = '你好' }) {
   const proc = require('../server/proc');
   const dir = fakeCli(adapterId);
   const log = path.join(tmp(), 'calls.jsonl');
   const env = { PATH: process.env.PATH, FAKE_LOG: process.env.FAKE_LOG, FAKE_SCRIPT: process.env.FAKE_SCRIPT, FAKE_HELP: process.env.FAKE_HELP };
   process.env.PATH = dir + path.delimiter + process.env.PATH;
   process.env.FAKE_LOG = log;
-  process.env.FAKE_SCRIPT = JSON.stringify({ lines: lines.map((l) => (typeof l === 'string' ? l : JSON.stringify(l))), exit, stderr, failIf, failText, control });
+  const lineOf = (l) => (typeof l === 'string' ? l : JSON.stringify(l));
+  process.env.FAKE_SCRIPT = JSON.stringify({ lines: lines.map(lineOf), exit, stderr, failIf, failText, control, ask, after: (after || []).map(lineOf) });
   if (help !== undefined) process.env.FAKE_HELP = help;
   proc.clearCache();
   const adapter = require('../server/adapters').get(adapterId);
@@ -2197,6 +2536,7 @@ async function runFake(adapterId, { help, lines = [], exit = 0, stderr = '', fai
       prompt,
       sessionId,
       emit: (e) => events.push(e),
+      askUser,
     });
     const res = await h.done;
     const calls = fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)) : [];
@@ -2266,6 +2606,50 @@ test('Claude Code：prompt 用 stream-json 写进去，这一轮做完再问它�
   const old = await runFake('claude', { help, lines });
   assert.strictEqual(old.res.text, '好了');
   assert.deepStrictEqual(old.res.context, { used: 5 + 1130 + 7, window: 200000, model: 'claude-x' });
+});
+
+test('Claude Code：运行命令前问我——加上 --permission-prompt-tool stdio，要批准的工具问你，按你的回答回给它', async () => {
+  const help = [
+    '  -p, --print                     Print response and exit',
+    '  --input-format <format>         Input format: "text" (default), or "stream-json"',
+    '  --output-format <format>        Output format: "text", "json", or "stream-json"',
+    '  --permission-prompt-tool <tool> MCP tool to use for permission prompts (only works with --print)',
+    '  --permission-mode <mode>        (choices: "acceptEdits", "bypassPermissions", "default", "dontAsk", "plan")',
+  ].join('\n');
+  const ask = { subtype: 'can_use_tool', tool_name: 'Bash', display_name: 'Bash', input: { command: 'npm test' }, description: 'Run the tests', tool_use_id: 't1' };
+  const after = [
+    { type: 'assistant', message: { id: 'm1', model: 'claude-x', content: [{ type: 'text', text: '测试过了' }], usage: { input_tokens: 5, output_tokens: 3 } } },
+    { type: 'result', subtype: 'success', result: '测试过了', session_id: 'S1' },
+  ];
+  const asked = [];
+  for (const allow of [true, false]) {
+    const r = await runFake('claude', {
+      help,
+      agent: { permission: 'ask' },
+      lines: [{ type: 'system', subtype: 'init', session_id: 'S1', model: 'claude-x' }],
+      ask,
+      after,
+      askUser: async (q) => (asked.push(q), allow),
+    });
+    assert.strictEqual(r.res.text, '测试过了');
+    const args = r.calls[0].args;
+    assert.strictEqual(args[args.indexOf('--permission-prompt-tool') + 1], 'stdio');
+    assert.strictEqual(args[args.indexOf('--permission-mode') + 1], 'acceptEdits', '改文件不用问');
+    const reply = r.calls[0].input
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l))
+      .find((x) => x.type === 'control_response');
+    assert.strictEqual(reply.response.request_id, 'perm-1');
+    assert.deepStrictEqual(
+      reply.response.response,
+      allow ? { behavior: 'allow', updatedInput: { command: 'npm test' } } : { behavior: 'deny', message: '用户没有允许这次操作。' }
+    );
+  }
+  assert.deepStrictEqual(asked[0], { tool: 'Bash', title: 'Bash', detail: 'npm test', note: 'Run the tests' });
+  // 别的权限不加这个参数
+  const plain = adapters.get('claude').buildArgs({ agent: { permission: 'edit' }, caps: adapters.get('claude').parseHelp(help) });
+  assert.ok(!plain.includes('--permission-prompt-tool'));
 });
 
 test('Codex：上下文从它自己的会话记录里读最后一个 token_count，按会话 id 找文件', () => {

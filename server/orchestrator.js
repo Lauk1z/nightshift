@@ -15,7 +15,7 @@ const models = require('./models');
 const { t: tr } = require('./i18n');
 const { parseMentions, buildCliPrompt, buildApiMessages, buildReviewPrompt, buildReviewApiMessages, parseVerdict, approvalMode } = require('./prompt');
 
-const { RESUME_FAIL } = require('./adapters/common'); // 续上旧会话失败时换新会话重来
+const { RESUME_FAIL, busyError } = require('./adapters/common'); // 续上旧会话失败时换新会话重来；接口太忙时等一会儿再试
 
 function clip(s, n) {
   s = String(s ?? '');
@@ -60,6 +60,8 @@ class Orchestrator {
     this.bus = bus;
     this.usage = usage || null; // token 用量（见 usage.js），测试里可以不给
     this.rts = new Map();
+    this.retryWaits = [30, 120, 300]; // 接口太忙时等几秒再试（见 runTurn），测试里改短
+    this.checkpoints = null; // 撤销某一轮的改动用（见 checkpoints.js），index.js 里给
   }
 
   rt(roomId) {
@@ -103,6 +105,7 @@ class Orchestrator {
         live: run.live.slice(-4000),
         items: run.items.slice(-60).map((it) => (it.k === 'note' ? { ...it, d: clip(it.d, 1500) } : it)),
         total: run.items.length,
+        ask: run.ask || null, // 在等你批准的命令（运行命令前问我）
       },
     };
   }
@@ -149,10 +152,13 @@ class Orchestrator {
     return [...new Set(ids)].filter((id) => id !== 'user' && id !== 'all' && id !== selfId);
   }
 
-  // attachments：这条消息带的附件（已经都在项目文件夹里，见 files.js 的 checkAttachments）
-  postUser(roomId, text, attachments = []) {
+  // attachments：这条消息带的附件（已经都在项目文件夹里，见 files.js 的 checkAttachments）。
+  // replaces：编辑重发时替换的那条用户消息，发出后把原来那条标成「已修改」（成员以新的为准）
+  postUser(roomId, text, attachments = [], { replaces } = {}) {
     const room = this.store.getRoom(roomId);
     if (!room) throw new Error(tr('会话不存在'));
+    const old = replaces ? this.store.messages(roomId).find((m) => m.id === replaces && m.from === 'user') : null;
+    if (replaces && !old) throw new Error(tr('要修改的消息不存在'));
     const r = this.rt(roomId);
     // 有成员在等你回复（接力停在那里，或者审查模型正在替你看）：没 @ 人就交给问你的那位。
     // 回复里的成员先做，原来排着的再接着往下
@@ -161,8 +167,22 @@ class Orchestrator {
     if (!targets.length && waiting && room.agents.some((a) => a.id === waiting && a.enabled !== false)) targets = [waiting];
     if (!targets.length) targets = this.defaultTargets(room);
     const fresh = !this.isBusy(roomId);
-    const msg = this.store.addMessage(roomId, { from: 'user', name: '用户', kind: 'user', text, ...(attachments.length ? { attachments } : {}) });
+    const msg = this.store.addMessage(roomId, {
+      from: 'user',
+      name: '用户',
+      kind: 'user',
+      text,
+      ...(attachments.length ? { attachments } : {}),
+      ...(old ? { replaces: old.id, replacesSeq: old.seq } : {}),
+    });
     this.bus.send('message', { roomId, message: msg });
+    if (old) {
+      const edited = this.store.updateMessage(roomId, old.id, (m) => {
+        m.editedBy = msg.id;
+        m.editedSeq = msg.seq;
+      });
+      if (edited) this.bus.send('message-update', { roomId, message: edited });
+    }
     if (fresh) {
       // 空闲时发的消息开始一次新任务，开始时的文件快照等第一位成员开始工作时再拍
       r.task = msg.seq;
@@ -282,10 +302,19 @@ class Orchestrator {
 
     let res;
     let before = null;
+    let saved = null; // 这一轮开始前的文件内容（撤销用）
     try {
       if (!adapter) throw new Error(tr('未知的接入方式：{name}', { name: agent.adapter }));
       if (!room.workspace || !fs.existsSync(room.workspace)) throw new Error(tr('项目文件夹不存在：{path}', { path: room.workspace || tr('（未设置）') }));
       before = files.snapshot(room.workspace); // 和结束时的快照对比，就知道这一轮动了哪些文件
+      // 撤销用：开始前的文件内容存一份（见 checkpoints.js）。文件太多被截断时不存，这一轮就撤销不了
+      if (this.checkpoints && !before.truncated) {
+        try {
+          saved = this.checkpoints.backup(room.projectId, room.workspace, before);
+        } catch (e) {
+          console.error('[checkpoints]', e);
+        }
+      }
       this.keepBase(room, r, before, run.startedAt);
       res = await this.invoke(room, agent, adapter, run, trigger);
       // 会话找不到（比如换了项目文件夹）→ 丢掉旧会话，从头带上完整记录重试一次
@@ -293,6 +322,11 @@ class Orchestrator {
         delete room.sessions[agent.id];
         delete room.lastSeen[agent.id];
         if (room.context) delete room.context[agent.id];
+        res = await this.invoke(room, agent, adapter, run, trigger);
+      }
+      // 接口限流、服务太忙：等一会儿自动再试（夜里没人点「重试」）。这一轮还什么都没做的才重试；额度用完的不算
+      for (let n = 0; n < this.retryWaits.length && res.error && !run.stopped && run.items.length === 0 && busyError(res.error); n++) {
+        if (!(await this.waitToRetry(roomId, run, this.retryWaits[n], n + 1))) break;
         res = await this.invoke(room, agent, adapter, run, trigger);
       }
     } catch (e) {
@@ -317,6 +351,15 @@ class Orchestrator {
     const status = stopped ? 'stopped' : res.error ? 'error' : 'done';
     const after = before ? files.snapshot(room.workspace) : null;
     const changed = before ? files.diff(before, after, room.workspace) : [];
+    // 这一轮改了哪些文件、改之前和改之后的内容，记在消息上，之后可以撤销、恢复
+    let undo = null;
+    if (saved && after && !after.truncated && changed.length) {
+      try {
+        undo = this.checkpoints.record(room.projectId, room.workspace, files.diff(before, after, room.workspace, Infinity), saved);
+      } catch (e) {
+        console.error('[checkpoints]', e);
+      }
+    }
     const check = delivery({
       items: run.items,
       changed,
@@ -345,6 +388,7 @@ class Orchestrator {
       error: status === 'error' ? clip(res.error, 3000) : undefined,
       items: items.slice(-300).map((it) => (it.k === 'note' ? { ...it, d: clip(it.d, 4000) } : it)),
       files: changed,
+      ...(undo ? { undo } : {}),
       ...check,
       ...(accepted ? { acceptance: accepted } : {}),
       meta: { ms: Date.now() - run.startedAt, model: res.model || agent.model || '', effort: agent.effort || '' },
@@ -521,6 +565,46 @@ class Orchestrator {
     });
   }
 
+  // 运行命令前问我：成员要运行命令（或者用别的要批准的工具），停在这里等你点允许或拒绝；停止接力就当拒绝。
+  // 一次只问一件事（成员等着回答才会往下做）
+  askUser(roomId, run, req) {
+    return new Promise((resolve) => {
+      if (run.stopped) return resolve(false);
+      const id = 'k' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+      run.ask = { id, tool: String(req.tool || ''), title: clip(String(req.title || req.tool || ''), 80), detail: clip(String(req.detail || ''), 4000), note: clip(String(req.note || ''), 300), at: Date.now() };
+      run.askDone = (allow) => {
+        run.ask = null;
+        run.askDone = null;
+        if (!run.stopped) run.status = allow ? tr('已允许，接着做') : tr('没有允许，换个办法');
+        this.emitProgress(roomId, true);
+        resolve(!!allow);
+      };
+      run.status = tr('等你批准');
+      this.emitProgress(roomId, true);
+    });
+  }
+
+  // 你点了允许 / 拒绝
+  answer(roomId, askId, allow) {
+    const run = this.rt(roomId).running;
+    if (!run || !run.ask || run.ask.id !== askId || !run.askDone) throw new Error(tr('这个请求已经处理过了'));
+    run.askDone(!!allow);
+  }
+
+  // 等 s 秒再重试：界面上写着在等，点停止就不等了（返回 false）
+  waitToRetry(roomId, run, s, n) {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => resolve(true), s * 1000);
+      run.cancel = () => {
+        clearTimeout(timer);
+        resolve(false);
+      };
+      run.status = tr('接口太忙，{s} 秒后自动重试（第 {n} 次）', { s, n });
+      run.live = '';
+      this.emitProgress(roomId, true);
+    });
+  }
+
   async invoke(room, agent, adapter, run, trigger) {
     const messages = this.store.messages(room.id);
     const upto = room.seq;
@@ -532,6 +616,7 @@ class Orchestrator {
       cwd: room.workspace,
       sessionId,
       emit: (ev) => this.onEvent(room.id, run, ev),
+      askUser: (req) => this.askUser(room.id, run, req),
     };
     // 最近一条用户消息里用了 /技能 时，附上技能说明。有会话记忆的成员只在第一次看到这条消息时附；API 模型没有记忆，每轮都附
     let skillText = '';
@@ -596,6 +681,7 @@ class Orchestrator {
     this.cancelReview(r);
     this.unpause(r);
     if (r.running) {
+      if (r.running.askDone) r.running.askDone(false);
       r.running.stopped = true;
       r.running.status = tr('正在停止');
       try {
@@ -606,6 +692,24 @@ class Orchestrator {
       this.system(roomId, tr('你停止了接力，排队中的成员不会再执行。'));
     }
     this.emitState(roomId);
+  }
+
+  // 让成员重新回答它的某一条回复（换个思路再做一遍）：插到队伍最前面，提示词里写明是哪一条；原来那条留着
+  again(roomId, msgId) {
+    const room = this.store.getRoom(roomId);
+    const m = room && this.store.messages(roomId).find((x) => x.id === msgId);
+    if (!m || m.kind !== 'agent') throw new Error(tr('消息不存在'));
+    const agent = room.agents.find((a) => a.id === m.from);
+    if (!agent) throw new Error(tr('{name} 已经不在这个会话里了', { name: m.name }));
+    if (agent.enabled === false) throw new Error(tr('{name} 已停用', { name: agent.name }));
+    const r = this.rt(roomId);
+    this.cancelReview(r);
+    this.unpause(r);
+    this.system(roomId, tr('你让 {name} 重新回答 #{seq} 那条', { name: agent.name, seq: m.seq }));
+    r.queue = r.queue.filter((q) => q.agentId !== agent.id);
+    r.queue.unshift({ agentId: agent.id, auto: false, seq: room.seq, byName: '用户', again: m.seq });
+    this.emitState(roomId);
+    this.pump(roomId);
   }
 
   // 让某个成员再做一次（比如上次出错了）
@@ -637,6 +741,7 @@ class Orchestrator {
     const r = this.rt(roomId);
     r.queue = r.queue.filter((q) => q.agentId !== agentId);
     if (r.running && r.running.agentId === agentId) {
+      if (r.running.askDone) r.running.askDone(false);
       r.running.stopped = true;
       try {
         if (r.running.cancel) r.running.cancel();
@@ -660,6 +765,7 @@ class Orchestrator {
       r.queue = [];
       this.cancelReview(r);
       if (r.running) {
+        if (r.running.askDone) r.running.askDone(false);
         r.running.stopped = true;
         try {
           if (r.running.cancel) r.running.cancel();

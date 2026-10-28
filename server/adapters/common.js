@@ -93,6 +93,11 @@ function addUsage(list, model, u) {
   return list;
 }
 
+// 接口限流、服务太忙（过一会儿再试多半就好了）；额度用完、要付费的不算，等多久都没用
+const BUSY = /\b(429|503|529)\b|rate.?limit|too many requests|overloaded|temporarily unavailable|server (is )?busy|try again later|请求过于频繁|服务繁忙|系统繁忙|限流/i;
+const NOT_BUSY = /quota|billing|insufficient|credit|usage limit|额度|余额|欠费|配额/i;
+const busyError = (s) => BUSY.test(String(s || '')) && !NOT_BUSY.test(String(s || ''));
+
 // 上下文用了多少（右侧面板的「上下文」）：最后一次调用模型时送进去的（含命中缓存的部分）加上这次的回复，
 // 下一轮都还在上下文里。u 的写法和 addUsage 一样；window 是模型的上下文窗口，不知道就是 0（之后按模型目录补）
 function contextOf(model, u, window = 0) {
@@ -148,4 +153,4 @@ function segmenter(emit) {
 const RESUME_FAIL =
   /no conversation found|session.{0,40}not found|could not find session|couldn't find session|no session (found|matching|with)|session.{0,40}(does not|doesn't) exist|no rollout found|thread.{0,40}not found|unknown session|failed to resume|cannot resume|invalid session|omit --session-id/i;
 
-module.exports = { rel, outside, clip, prettyCmd, tail, optionBlock, makeProbe, addUsage, contextOf, readableError, segmenter, RESUME_FAIL };
+module.exports = { rel, outside, clip, prettyCmd, tail, optionBlock, makeProbe, addUsage, contextOf, busyError, readableError, segmenter, RESUME_FAIL };

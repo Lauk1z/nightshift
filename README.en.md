@@ -64,6 +64,12 @@ Messages that don't @mention anyone go to the member shown at the bottom right o
 
 **Attachments**: drag files or folders into the chat area, click + at the bottom left of the message box, or paste a screenshot or copied files into the message box (Ctrl+V). Files from outside the project are copied into `.agentchat/attachments/` in the project so every member can read them; the originals are never changed.
 
+**Changing your mind**:
+
+- Under a member's reply, "Answer again" has it redo that reply with a fresh approach; the original stays.
+- Your own messages have "Edit and resend": the edited text goes out as a new message, the original is marked Edited, and members go by the new one.
+- When a member changed files in a turn, its reply has "Undo this turn's changes": new files are removed, changed files reverted and deleted files put back. Files changed since are left alone, and "Restore" brings the changes back. Before each turn Nightshift keeps a copy of the project's files (files over 2 MB aren't kept, so their changes can't be undone).
+
 ## The interface
 
 - **Sidebar**: search, New chat, New project, and your projects and chats below. Chats can be pinned and dragged into order; right-click for their actions.
@@ -87,7 +93,7 @@ Click the member avatars in the title bar, then a member, to change its name, ro
 <p align="center"><img src="docs/screenshots/en/member.png" width="640" alt="Member settings: the agent type (eight command-line tools or an API model), the model and the thinking effort"></p>
 
 - **Model and thinking effort**: the lists come from each tool; "Default" keeps the tool's own setting. You can also switch models from the member picker at the bottom right of the message box: hover over a member.
-- **Permissions**: read-only, edit files (default), or full access (can run any command; only turn it on for projects you trust). Member settings explain what each level means for that tool.
+- **Permissions**: read-only, edit files (default), ask before running commands (Claude Code and API models: they stop before each command and only run it if you allow it), or full access (can run any command; only turn it on for projects you trust). Member settings explain what each level means for that tool.
 - **API models**: choose "API model" as the agent type and enter the endpoint (DeepSeek, Qwen, Kimi and local Ollama are built in), your key and the model name. To read and write files, the model must support tool calling. Under "More settings" you can enter its context window: the Context page uses it to show how much is used, and a model with a small window gets less chat history each turn.
 
 ## More
@@ -95,6 +101,8 @@ Click the member avatars in the title bar, then a member, to change its name, ro
 - **Skills**: type `/` to pick a skill installed on this computer. If a member's own tool doesn't have that skill, its instructions are sent along.
 - **Delivery checklist**: turn it on in chat settings. When a member delivers its work, Nightshift checks the source code, whether tests actually ran and passed, the EXE, logs and existing files, and shows the result as a card; the launch test is left to you.
 - **Usage**: "Usage" in the account menu counts tokens by model, with a heatmap of the past year and a breakdown per model.
+- **Search chat history**: type two or more characters in the sidebar search and matching messages from every chat appear below; click one to jump to it.
+- **Export**: "Export as Markdown" in a chat's menu (right-click it in the sidebar, or ⋯ in the title bar) saves the whole chat to a file.
 
 <p align="center"><img src="docs/screenshots/en/usage.png" width="800" alt="The Usage page: five numbers such as total tokens, a heatmap of token activity over the past year, and usage by model"></p>
 
@@ -107,6 +115,8 @@ Click the member avatars in the title bar, then a member, to change its name, ro
 ## FAQ
 
 **A member keeps failing?** Nightshift runs the `claude`, `codex` and other commands on your computer with their own sign-ins. First check that something like `claude -p "hello"` answers in a terminal.
+
+**Rate limits or a busy API?** If it happens before a member has done any work, Nightshift waits and retries on its own (30 seconds, 2 minutes, 5 minutes); click stop to skip the wait. Running out of quota isn't retried.
 
 **The AIs won't stop?** Click stop (■) where the send button is, or lower the "Auto-relay limit" in chat settings.
 

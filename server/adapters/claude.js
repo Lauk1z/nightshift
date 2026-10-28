@@ -13,7 +13,7 @@ const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 const CTX_REQUEST = 'agent-chat-context';
 
 // 读不到 --help 时按新版处理
-const MODERN = { known: false, effort: true, efforts: EFFORTS, partial: true, settings: true, streamInput: true, modes: [], aliases: [] };
+const MODERN = { known: false, effort: true, efforts: EFFORTS, partial: true, settings: true, streamInput: true, promptTool: true, modes: [], aliases: [] };
 
 function parseHelp(help) {
   const text = String(help || '');
@@ -30,6 +30,7 @@ function parseHelp(help) {
     partial: /--include-partial-messages\b/.test(text),
     settings: /--settings\b/.test(text),
     streamInput: /--input-format\b/.test(text),
+    promptTool: /--permission-prompt-tool\b/.test(text),
     modes: [...optionBlock(text, '--permission-mode').matchAll(/"(\w+)"/g)].map((m) => m[1]),
     aliases: [...optionBlock(text, '--model').matchAll(/'([a-z][a-z0-9-]*)'/g)].map((m) => m[1]),
   };
@@ -71,6 +72,8 @@ function buildArgs({ agent, sessionId, caps = MODERN }) {
   const args = ['-p', ...(c.streamInput ? ['--input-format', 'stream-json'] : []), '--output-format', 'stream-json', '--verbose'];
   if (c.partial) args.push('--include-partial-messages');
   args.push(...permArgs(agent.permission, c));
+  // 运行命令前问我：要批准的工具（运行命令、上网……）通过 stdin 问 Nightshift（见 run 里的 can_use_tool）
+  if (agent.permission === 'ask' && c.streamInput && c.promptTool) args.push('--permission-prompt-tool', 'stdio');
   if (agent.model) args.push('--model', agent.model);
   const levels = c.efforts.length ? c.efforts : EFFORTS;
   if (c.effort && levels.includes(agent.effort)) {
@@ -122,6 +125,13 @@ function claudeContext(info, last, result, model) {
   return contextOf(m, { input: u.input_tokens, output: u.output_tokens, cacheRead: u.cache_read_input_tokens, cacheWrite: u.cache_creation_input_tokens }, mu && mu.contextWindow);
 }
 
+// 问你批不批准时给你看的那一段：命令、网址、搜索词、文件，别的就是参数
+function askDetail(q) {
+  const i = q.input || {};
+  const v = i.command || i.url || i.query || i.file_path || i.path;
+  return v ? String(v) : clip(JSON.stringify(i), 2000);
+}
+
 function toolItem(b, cwd) {
   const n = b.name || 'tool';
   const i = b.input || {};
@@ -150,12 +160,13 @@ module.exports = {
   claudeUsage,
   claudeContext,
   reportsContext: true,
+  canAsk: true, // 支持「运行命令前问我」（要 --input-format 和 --permission-prompt-tool）
   async detect(force) {
     const base = await detectCli('claude');
     if (base.installed) await probe(force);
     return base;
   },
-  run({ agent, cwd, prompt, sessionId, emit }) {
+  run({ agent, cwd, prompt, sessionId, emit, askUser }) {
     let child = null;
     let cancelled = false;
     let result = null;
@@ -196,6 +207,21 @@ module.exports = {
         if (r.request_id !== CTX_REQUEST) return;
         if (r.subtype === 'success') ctxInfo = r.response;
         return closeInput();
+      }
+      // 运行命令前问我：Claude Code 要用要批准的工具，问你；没法问（没给 askUser）就拒绝
+      if (j.type === 'control_request' && j.request && j.request.subtype === 'can_use_tool') {
+        const q = j.request;
+        const asked = askUser ? askUser({ tool: q.tool_name, title: q.display_name || q.tool_name, detail: askDetail(q), note: q.description || '' }) : Promise.resolve(false);
+        asked
+          .catch(() => false)
+          .then((allow) => {
+            if (!stdinOpen) return;
+            const response = allow ? { behavior: 'allow', updatedInput: q.input || {} } : { behavior: 'deny', message: tr('用户没有允许这次操作。') };
+            try {
+              child.stdin.write(JSON.stringify({ type: 'control_response', response: { subtype: 'success', request_id: j.request_id, response } }) + '\n');
+            } catch {}
+          });
+        return;
       }
       if (j.parent_tool_use_id) return; // 子代理内部的消息不展示（用量上面已经记了）
       switch (j.type) {
