@@ -401,7 +401,7 @@ module.exports = {
           const r = await chat({ url, key: api.apiKey, body, signal: ac.signal, emit });
           if (r.usage) {
             addUsage(usage, agent.model, r.usage);
-            context = contextOf(agent.model, r.usage) || context;
+            context = contextOf(agent.model, r.usage, api.contextWindow) || context;
           }
           // 工具调用写成了 DSML 文字：解析出来照样执行；看不懂的报错，不能当成已经回答了
           const dsml = parseDsml(r.content);

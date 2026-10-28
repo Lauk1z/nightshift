@@ -132,6 +132,22 @@ test('API 消息：角色交替、以用户消息结尾', () => {
   assert.ok(msgs.some((m) => m.role === 'assistant' && m.content.includes('设计好了')));
 });
 
+test('API 消息：填了上下文窗口、而且比较小时，少送一些更早的聊天记录；窗口大也不多送', () => {
+  const room = fakeRoom();
+  const long = Array.from({ length: 40 }, (_, i) => ({ seq: i + 1, from: 'user', name: '用户', kind: 'user', text: `第 ${i + 1} 条：` + '字'.repeat(1000) }));
+  const sent = (contextWindow) => {
+    const agent = { ...room.agents[0], api: contextWindow ? { contextWindow } : undefined };
+    return buildApiMessages({ room, agent, messages: long }).map((m) => m.content).join('\n');
+  };
+  assert.match(sent(0), /第 1 条/, '没填：照旧最多 10 万字，40 条都送');
+  assert.match(sent(1000000), /第 1 条/, '窗口大也不多送，照样都在');
+  const small = sent(32000); // 留出 1.2 万给系统提示和回复，按八成算：最多 1.6 万字
+  assert.match(small, /更早的 \d+ 条消息已省略/);
+  assert.doesNotMatch(small, /第 1 条/);
+  assert.match(small, /第 40 条/);
+  assert.ok(small.length < 25000);
+});
+
 // ---- 编排：用一个假的 AI 跑通「接力」 ----
 function fakeAdapter(script) {
   return {
@@ -936,7 +952,7 @@ test('API 模型：流式输出 + 调用工具写文件', async () => {
   const events = [];
   const api = adapters.get('openai');
   const h = api.run({
-    agent: { name: 'DS', model: 'm', permission: 'edit', api: { baseUrl: `http://127.0.0.1:${srv.address().port}/v1`, apiKey: 'sk-test' } },
+    agent: { name: 'DS', model: 'm', permission: 'edit', api: { baseUrl: `http://127.0.0.1:${srv.address().port}/v1`, apiKey: 'sk-test', contextWindow: 64000 } },
     cwd: ws,
     apiMessages: [{ role: 'system', content: 's' }, { role: 'user', content: 'u' }],
     emit: (e) => events.push(e),
@@ -946,9 +962,9 @@ test('API 模型：流式输出 + 调用工具写文件', async () => {
   assert.strictEqual(out.error, undefined);
   assert.strictEqual(out.text, '写好了 docs/a.md，@Claude 请看');
   assert.strictEqual(fs.readFileSync(path.join(ws, 'docs', 'a.md'), 'utf8'), '你好');
-  // 用量是两次调用加起来；上下文看最后一次（送进去的 150 含命中缓存的 100，加上回复 20）
+  // 用量是两次调用加起来；上下文看最后一次（送进去的 150 含命中缓存的 100，加上回复 20），窗口是成员设置里填的
   assert.deepStrictEqual(out.usage, [{ model: 'm', input: 150, output: 30, cacheRead: 100, cacheWrite: 0 }]);
-  assert.deepStrictEqual(out.context, { used: 170, window: 0, model: 'm' });
+  assert.deepStrictEqual(out.context, { used: 170, window: 64000, model: 'm' });
   assert.ok(events.some((e) => e.type === 'tool' && e.item.k === 'write'));
   assert.ok(events.some((e) => e.type === 'text' && e.text === '我来写文件。'));
 });
@@ -1301,6 +1317,20 @@ test('读 Codex 的 config.toml 顶层设置', () => {
   const f = path.join(tmp(), 'config.toml');
   fs.writeFileSync(f, 'model = "gpt-6-astra"\nmodel_reasoning_effort = "high"\n\n[profiles.x]\nmodel = "other"\n');
   assert.deepStrictEqual(models.tomlTop(f), { model: 'gpt-6-astra', effort: 'high' });
+});
+
+test('API 模型：接口的模型列表里写着上下文长度的（OpenRouter 这些）一起带回来', async () => {
+  const srv = http.createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ data: [{ id: 'b/model', context_length: 131072 }, { id: 'a/model', top_provider: { context_length: 200000 } }, { id: 'c/plain' }, 'd/str'] }));
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  try {
+    const r = await models.apiModels(`http://127.0.0.1:${srv.address().port}/v1/`, '');
+    assert.deepStrictEqual(r, { models: ['a/model', 'b/model', 'c/plain', 'd/str'], contexts: { 'b/model': 131072, 'a/model': 200000 } });
+  } finally {
+    srv.close();
+  }
 });
 
 test('API 模型：思考强度和额外请求参数会发给接口', async () => {
@@ -1868,6 +1898,15 @@ test('设置和用量接口；换了语言，服务端的报错和 boot.js 跟�
       await call('POST', `/api/rooms/${rid}/agents`, { name: 'DS', adapter: 'openai', model: 'deepseek-chat', permission: 'edit', enabled: false, api: { baseUrl: 'http://127.0.0.1:9/v1', apiKey: 'sk-test' } })
     ).json();
     await call('PATCH', `/api/rooms/${rid}`, { settings: { defaultAgent: ag.id, maxAutoTurns: 7 } });
+    // API 模型的上下文窗口：128k、1M、数字都行，空着就是不知道；写不对的不收
+    const win = (v) => call('PATCH', `/api/rooms/${rid}/agents/${ag.id}`, { api: { contextWindow: v } });
+    assert.strictEqual((await win('128k')).json().api.contextWindow, 128000);
+    assert.strictEqual((await win(' 1M ')).json().api.contextWindow, 1000000);
+    assert.strictEqual((await win(64000)).json().api.contextWindow, 64000);
+    assert.strictEqual((await win('很大')).status, 400);
+    assert.strictEqual((await win('500')).status, 400);
+    const cleared = (await win('')).json();
+    assert.deepStrictEqual([cleared.api.contextWindow, cleared.api.hasKey], [0, true], '改窗口不动 Key');
     // 左边栏的列表里带着成员的模型、思考强度、停没停用和默认接收人：「用相同的成员新建会话」时主界面照搬这个会话，输入框要用到
     const sum = (await call('GET', '/api/projects')).json().find((p) => p.id === made.project.id).rooms.find((r) => r.id === rid);
     assert.deepStrictEqual([sum.defaultAgent, sum.agents[0].model, sum.agents[0].effort, sum.agents[0].enabled], [ag.id, 'deepseek-chat', '', false]);

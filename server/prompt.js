@@ -206,9 +206,17 @@ function buildCliPrompt({ room, agent, messages, fresh, trigger, logPath, skillT
 }
 
 // API 类模型（没有会话记忆）：每次都给协议 + 最近的历史。
+// 每轮送给 API 模型多少字的聊天记录：默认最多 10 万字。成员设置里填了上下文窗口、而且比较小（比如本机的小模型）时按它少送一些，
+// 留出系统提示、工具说明和回复的地方（一个汉字大约一个 token，按八成算，偏保守）；窗口再大也不多送
+const API_BUDGET = 100000;
+function apiBudget(agent) {
+  const win = Number(agent.api && agent.api.contextWindow) || 0;
+  return win ? Math.max(4000, Math.min(API_BUDGET, Math.floor((win - 12000) * 0.8))) : API_BUDGET;
+}
+
 function buildApiMessages({ room, agent, messages, trigger, logPath, skillText }) {
   const msgs = messages.filter(visible);
-  const [omitted, kept] = budgetTail(msgs, agent.id, 100000);
+  const [omitted, kept] = budgetTail(msgs, agent.id, apiBudget(agent));
   const out = [{ role: 'system', content: protocol(room, agent, logPath) }];
   const push = (role, content) => {
     const last = out[out.length - 1];

@@ -10,6 +10,29 @@ const MIN = 60e3;
 const H = 60 * MIN;
 const D = 24 * H;
 
+// 主角会话里每个成员这一轮结束时的上下文（和 orchestrator.js 的 noteContext 记的一样）
+function contextDemo(t0, variant) {
+  const k = (n) => Math.round(n * 1000);
+  const parts = [
+    ['system_prompt', 'System prompt', 3.4],
+    ['system_tools', 'System tools', 14.6],
+    ['system_tools_deferred', 'System tools (deferred)', 21.3, 'deferred'],
+    ['mcp_tools', 'MCP tools', 6.1],
+    ['mcp_tools_deferred', 'MCP tools (deferred)', 12.8, 'deferred'],
+    ['memory_files', 'Memory files', 1.2],
+    ['skills', 'Skills', 5.7],
+    ['messages', 'Messages', 86.4],
+    ['autocompact_buffer', 'Autocompact buffer', 33, 'buffer'],
+  ].map(([id, name, n, kind = 'used']) => ({ id, name, tokens: k(n), kind }));
+  const used = parts.filter((p) => p.kind === 'used').reduce((n, p) => n + p.tokens, 0);
+  parts.push({ id: 'free_space', name: 'Free space', tokens: 1000000 - used - k(33), kind: 'free' });
+  return {
+    a_cl: { used, window: 1000000, model: 'claude-opus-5-5', at: t0 + 7 * MIN, parts },
+    a_gpt: { used: k(216.4), window: 258400, model: 'gpt-6.1-sol', at: t0 + 2 * MIN },
+    ...(variant === 'done' ? { a_ds: { used: k(48.9), window: 0, model: 'deepseek-v4-pro', at: t0 + 12 * MIN } } : {}),
+  };
+}
+
 // dataDir：Nightshift 的数据文件夹（AGENT_CHAT_DATA），先清空；wsRoot：四个项目文件夹放在这里面
 function seed({ lang, variant, theme, dataDir, wsRoot }) {
   const c = CONTENT[lang];
@@ -147,6 +170,9 @@ function seed({ lang, variant, theme, dataDir, wsRoot }) {
       settings: { maxAutoTurns: 10, defaultAgent: 'a_gpt' },
       // 已经交接过的成员：下次只看新消息（和真的跑过一样）
       lastSeen: { a_gpt: 2, a_cl: 3, ...(variant === 'done' ? { a_ds: 4 } : {}) },
+      sessions: { a_gpt: 'demo-gpt', a_cl: 'demo-claude', ...(variant === 'done' ? { a_ds: 'demo-ds' } : {}) },
+      // 右侧面板的「上下文」：Claude Code 按类别分好；GPT 聊得久了快满了；DeepSeek Harness 只说得出用了多少
+      context: contextDemo(t0, variant),
       createdAt: now - 20 * MIN,
       updatedAt: variant === 'done' ? now - 5 * MIN : now - 1 * MIN,
     },

@@ -62,7 +62,7 @@ Messages that don't @mention anyone go to the member shown at the bottom right o
 - **Automatic**: a reviewer model looks first (a member of the chat, or a dedicated model; it's read-only). It answers low-risk requests for you and hands you only high-risk actions, things you have to do yourself, or anything it's unsure about.
 - **Full autonomy**: the relay never stops; members make their own calls.
 
-**Attachments**: drag files or folders into the chat area, or click + at the bottom left of the message box. Files from outside the project are copied into `.agentchat/attachments/` in the project so every member can read them; the originals are never changed.
+**Attachments**: drag files or folders into the chat area, click + at the bottom left of the message box, or paste a screenshot or copied files into the message box (Ctrl+V). Files from outside the project are copied into `.agentchat/attachments/` in the project so every member can read them; the originals are never changed.
 
 ## The interface
 
@@ -73,10 +73,12 @@ Messages that don't @mention anyone go to the member shown at the bottom right o
   - **Side chat**: ask one member a question; read-only, and it stays out of the group chat.
   - **Terminal**: PowerShell, opened in the project folder.
   - **Browser**: open web pages running on this computer, or the project's `.html` files.
-  - **Context**: how much of each member's context window it has used in this chat, as of its latest turn. Claude Code also breaks it down into messages, system tools, MCP tools, system prompt and skills; Gemini CLI, Grok and Hermes don't report it.
+  - **Context**: how much of each member's context window it has used in this chat, as of its latest turn. Claude Code also breaks it down into messages, system tools, MCP tools, system prompt and skills; Gemini CLI, Grok and Hermes don't report it. When a member is nearly full, "Clear memory" on its card starts it fresh.
 - Files a member created or changed in a turn are listed under its message; click one to preview it.
 
 <img src="docs/screenshots/en/preview.png" alt="The Files page of the side panel previewing the to-do list page the members built; on the left, DeepSeek's reply after testing, with its file cards">
+
+<p align="center"><img src="docs/screenshots/en/context.png" width="480" alt="The Context page of the side panel: Claude's context split into messages, system tools, MCP tools, system prompt, skills and more; GPT at 84%, marked Nearly full; DeepSeek showing only how much it has used"></p>
 
 ## Members
 
@@ -86,7 +88,7 @@ Click the member avatars in the title bar, then a member, to change its name, ro
 
 - **Model and thinking effort**: the lists come from each tool; "Default" keeps the tool's own setting. You can also switch models from the member picker at the bottom right of the message box: hover over a member.
 - **Permissions**: read-only, edit files (default), or full access (can run any command; only turn it on for projects you trust). Member settings explain what each level means for that tool.
-- **API models**: choose "API model" as the agent type and enter the endpoint (DeepSeek, Qwen, Kimi and local Ollama are built in), your key and the model name. To read and write files, the model must support tool calling.
+- **API models**: choose "API model" as the agent type and enter the endpoint (DeepSeek, Qwen, Kimi and local Ollama are built in), your key and the model name. To read and write files, the model must support tool calling. Under "More settings" you can enter its context window: the Context page uses it to show how much is used, and a model with a small window gets less chat history each turn.
 
 ## More
 

@@ -129,6 +129,23 @@ const SHOTS = {
     return { rect: [r.left, r.top, r.width, cut - r.top], radius: parseFloat(getComputedStyle(m).borderTopLeftRadius) };
   },
 
+  // 右侧面板的「上下文」：DeepSeek 已经检查完，三个成员都有数。只要面板里那张卡片，到最后一个成员为止
+  async context() {
+    const s = window.__shot;
+    await s.open('r_build', ['p_weekly']);
+    s.bottom();
+    const tab = await s.waitFor('[data-tb-panel="context"]');
+    if (tab.getAttribute('aria-pressed') !== 'true') tab.click();
+    await s.waitFor('.ctx-card .ctx-legend');
+    await s.sleep(1500);
+    s.done();
+    const v = s.need('.pview.active');
+    const r = v.getBoundingClientRect();
+    const cards = v.querySelectorAll('.ctx-card');
+    const cut = Math.min(r.bottom, cards[cards.length - 1].getBoundingClientRect().bottom + 12);
+    return { rect: [r.left, r.top, r.width, cut - r.top], radius: parseFloat(getComputedStyle(v).borderTopLeftRadius) };
+  },
+
   // 用量页：到「各模型用量」的第四行为止
   async usage({ usage, handle }) {
     const s = window.__shot;

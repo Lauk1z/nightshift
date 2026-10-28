@@ -206,7 +206,7 @@ function geminiCatalog(home = os.homedir()) {
 // ---------- pi：pi --list-models 是一张表（provider  model  context  max-out  thinking  images） ----------
 const PI_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 
-// 表里的上下文写成 200K、1M、128000 这样
+// 上下文窗口写成 200K、1M、128000 这样（pi 的模型表、成员设置里填的）
 function tokenCount(v) {
   const m = String(v || '').replace(/,/g, '').match(/^(\d+(?:\.\d+)?)([kKmM])?$/);
   if (!m) return 0;
@@ -423,7 +423,14 @@ async function apiModels(baseUrl, apiKey) {
     if (!res.ok) throw new Error(tr('接口返回 {status}：{text}', { status: res.status, text: text.slice(0, 300) || res.statusText }));
     const j = JSON.parse(text);
     const list = Array.isArray(j) ? j : j.data || j.models || [];
-    return [...new Set(list.map((m) => (typeof m === 'string' ? m : m && (m.id || m.name))).filter(Boolean))].sort();
+    // 有的服务（OpenRouter 这些）会写每个模型的上下文长度，选模型时可以帮着填上
+    const contexts = {};
+    for (const m of list) {
+      if (!m || typeof m !== 'object') continue;
+      const n = Number(m.context_length || m.context_window || m.max_context_length || (m.top_provider && m.top_provider.context_length));
+      if ((m.id || m.name) && n > 0) contexts[m.id || m.name] = Math.round(n);
+    }
+    return { models: [...new Set(list.map((m) => (typeof m === 'string' ? m : m && (m.id || m.name))).filter(Boolean))].sort(), contexts };
   } catch (e) {
     if (ac.signal.aborted) throw new Error(tr('获取模型列表超时（15 秒）'));
     throw e;
@@ -440,6 +447,7 @@ function clearCache() {
 module.exports = {
   catalog,
   apiModels,
+  tokenCount,
   clearCache,
   claudeCatalog,
   parseCodexModels,

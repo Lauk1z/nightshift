@@ -977,6 +977,10 @@ window.createPanel = function createPanel(ctx) {
         <div class="pv-head ctx-top"><b>${tr('上下文')}</b><span class="ctx-hint">${tr('按每个成员最近一轮结束时算')}</span></div>
         <div class="pv-scroll ctx-list" id="cList"></div>`;
       v.addEventListener('click', (e) => {
+        const reset = e.target.closest('[data-ctx-reset]');
+        if (reset) return clearMemory(reset.dataset.ctxReset);
+        const win = e.target.closest('[data-ctx-window]');
+        if (win) return ctx.editMember(win.dataset.ctxWindow, { focus: 'context' });
         const t = e.target.closest('[data-ctx-fold]');
         if (!t) return;
         const id = t.dataset.ctxFold;
@@ -988,6 +992,20 @@ window.createPanel = function createPanel(ctx) {
       // 鼠标停在下面列表的某一类上：条上只亮这一段
       v.addEventListener('mouseover', (e) => highlight(e.target.closest('.ctx-legend [data-ctx-key]')));
       v.addEventListener('mouseleave', () => highlight(null));
+    }
+
+    // 清空记忆（和成员设置里的一样）：它忘掉之前的对话过程，下次轮到它时重新读一遍群聊记录，上下文也从头算
+    async function clearMemory(id) {
+      const a = agentById(id);
+      if (!a || !S.roomId) return;
+      const ok = await ctx.confirmBox(tr('清空记忆'), tr('{name} 会忘掉之前的对话过程。下次轮到它时，会重新读一遍群聊记录。', { name: a.name }), tr('清空'));
+      if (!ok) return;
+      try {
+        await api('POST', `/api/rooms/${S.roomId}/agents/${a.id}/reset`);
+        toast(tr('已清空 {name} 的记忆', { name: a.name }));
+      } catch (err) {
+        toast(err.message, true);
+      }
     }
 
     let lit = null;
@@ -1043,25 +1061,30 @@ window.createPanel = function createPanel(ctx) {
       const head = `<button type="button" class="ctx-head" data-ctx-fold="${a.id}" aria-expanded="${open}" title="${open ? tr('收起') : tr('展开')}">
           <span class="avatar sm" style="--c:${a.color}">${esc(initial(a.name))}</span>
           <span class="ctx-who"><b>${esc(a.name)}</b><span>${esc(sub)}</span></span>${ICONS.chevDown}</button>`;
+      // 有会话的成员可以清空记忆（快满了的时候让它从头开始）；正在工作时不行
+      const reset = !running && S.room.sessions && S.room.sessions[a.id] ? `<button type="button" class="link-btn" data-ctx-reset="${a.id}">${tr('清空记忆')}</button>` : '';
       if (!rec) {
         const why = env.context === false ? tr('{tool} 不报告上下文用量。', { tool }) : tr('发过言以后，这里会显示它的上下文用量。');
-        return `<section class="ctx-card empty" data-ctx-agent="${a.id}">${head}<p class="ctx-none">${esc(why)}</p></section>`;
+        return `<section class="ctx-card empty" data-ctx-agent="${a.id}">${head}<p class="ctx-none">${esc(why)}</p>${reset ? `<p class="ctx-foot"><span class="grow"></span>${reset}</p>` : ''}</section>`;
       }
-      const win = rec.window || 0;
+      // API 模型的上下文窗口工具说不出来，用成员设置里填的（填了马上就按它算，不用等下一轮）
+      const win = rec.window || Number(a.api && a.api.contextWindow) || 0;
       const used = pct(rec.used, win);
-      const { bar, deferred } = partsOf(rec);
+      const { bar, deferred } = partsOf({ ...rec, window: win });
       // 快满了：用到八成以后提醒一下（Claude Code、Codex 到时候会自动压缩，别的工具可能直接出错）
       const full = win && used >= 80 ? `<span class="ctx-full">${ICONS.warn}${tr('快满了')}</span>` : '';
       const sum = win
         ? `<div class="ctx-sum"><span>${tr('已使用 {pct}%', { pct: Math.round(used) })}</span>${full}<span class="grow"></span><span class="ctx-num">${fmtTok(rec.used)} / ${fmtTok(win)}</span></div>`
-        : `<div class="ctx-sum"><span>${tr('已使用 {n}', { n: fmtTok(rec.used) })}</span></div><p class="ctx-note">${tr('不知道这个模型的上下文窗口有多大')}</p>`;
+        : `<div class="ctx-sum"><span>${tr('已使用 {n}', { n: fmtTok(rec.used) })}</span></div><p class="ctx-note">${tr('不知道这个模型的上下文窗口有多大')}${
+            a.adapter === 'openai' ? ` <button type="button" class="link-btn" data-ctx-window="${a.id}">${tr('填写…')}</button>` : ''
+          }</p>`;
       const label = (s) => `${s.name} · ${fmtTok(s.tokens)}${s.cls === 'def' ? '' : ` · ${pct(s.tokens, win).toFixed(1)}%`}`;
       const segs = bar.map((s) => `<i class="${s.cls}" data-ctx-key="${esc(s.key)}" style="flex-grow:${s.tokens}" title="${esc(label(s))}"></i>`).join('');
       const barHtml = win && bar.length ? `<div class="ctx-bar" role="img" aria-label="${esc(tr('已使用 {pct}%', { pct: Math.round(used) }))}">${segs}</div>` : '';
       const row = (s) =>
         `<li data-ctx-key="${esc(s.key)}"><i class="sw ${s.cls}"></i><span class="n">${esc(s.name)}</span><span class="t">${fmtTok(s.tokens)}</span><span class="p">${s.cls === 'def' ? '—' : pct(s.tokens, win).toFixed(1) + '%'}</span></li>`;
       const legend = win && bar.length ? `<ul class="ctx-legend">${[...bar, ...deferred].map(row).join('')}</ul>` : '';
-      const foot = `<p class="ctx-foot">${running ? tr('正在工作，这一轮结束后更新') : tr('{time} 更新', { time: fmtTime(rec.at) })}</p>`;
+      const foot = `<p class="ctx-foot"><span>${running ? tr('正在工作，这一轮结束后更新') : tr('{time} 更新', { time: fmtTime(rec.at) })}</span><span class="grow"></span>${reset}</p>`;
       return `<section class="ctx-card${open ? '' : ' folded'}" data-ctx-agent="${a.id}">${head}${sum}${barHtml}${open ? legend + foot : ''}</section>`;
     }
 

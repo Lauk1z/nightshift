@@ -1,6 +1,6 @@
 'use strict';
 // 重新生成 README 的截图（docs/screenshots/<语言>/）：
-//   npm run screenshots                    全部 15 张：三种语言各一套 main-dark、main-light、preview、member、usage
+//   npm run screenshots                    全部 18 张：三种语言各一套 main-dark、main-light、preview、context、member、usage
 //   npm run screenshots -- usage en        只生成其中几张：写图名（可以只写开头，比如 main）或语言，两样都写时取交集
 //   npm run screenshots -- --out 文件夹    存到别的文件夹，不覆盖 docs/screenshots（先看看效果）
 // 每张图启动一次桌面版：演示数据（seed.js）加替身命令行工具（fake-cli.js），按 shots.js 里的脚本点开对应的界面后截图，
@@ -24,6 +24,7 @@ const KINDS = {
   'main-dark': { shot: 'main', theme: 'dark', variant: 'live', size: [1280, 900] },
   'main-light': { shot: 'main', theme: 'light', variant: 'live', size: [1280, 900] },
   preview: { shot: 'preview', theme: 'dark', variant: 'done', size: [1440, 900] },
+  context: { shot: 'context', theme: 'dark', variant: 'done', size: [1280, 1000] },
   member: { shot: 'member', theme: 'dark', variant: 'done', size: [1280, 1000] },
   usage: { shot: 'usage', theme: 'dark', variant: 'done', size: [1280, 1000] },
 };

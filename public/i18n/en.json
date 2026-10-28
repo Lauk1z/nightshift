@@ -954,5 +954,10 @@
   "MCP 服务器说明": "MCP server instructions",
   "压缩预留": "Compact buffer",
   "上下文::消息": "Messages",
-  "上下文::技能": "Skills"
+  "上下文::技能": "Skills",
+  "截图": "Screenshot",
+  "上下文窗口（token）": "Context window (tokens)",
+  "这个模型一次最多能看多少 token。填了以后，右侧面板的「上下文」能算出用了多少；窗口小的模型，每轮送给它的聊天记录也会少一些。不知道可以不填。": "How many tokens this model can take in at once. With it filled in, the Context page in the side panel shows how much is used, and a model with a small window gets less chat history each turn. Leave it empty if you don't know.",
+  "填写…": "Set it…",
+  "上下文窗口要写成 token 数，比如 128000、128k 或 1M": "Write the context window as a token count, such as 128000, 128k or 1M"
 }

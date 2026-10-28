@@ -2515,11 +2515,15 @@
     el.addEventListener('compositionend', () => onComposerInput());
     el.addEventListener('click', updatePop);
     el.addEventListener('blur', () => setTimeout(closePop, 150));
-    // 只接受纯文字，粘贴进来的 @成员 /技能 也变成标签
+    // 粘贴：有文字就贴文字（粘贴进来的 @成员 /技能 也变成标签）；只有文件（截图、资源管理器里复制的文件）就当附件加上。
+    // 从 Word、Excel 复制的东西文字和图片都有，贴文字
     el.addEventListener('paste', (e) => {
       e.preventDefault();
-      const text = (e.clipboardData && e.clipboardData.getData('text/plain')) || '';
-      if (text) document.execCommand('insertHTML', false, textToHtml(text));
+      const cd = e.clipboardData;
+      const text = (cd && cd.getData('text/plain')) || '';
+      if (text) return document.execCommand('insertHTML', false, textToHtml(text));
+      const files = cd ? [...cd.files] : [];
+      if (files.length) onPasteFiles(files);
     });
     el.addEventListener('drop', (e) => {
       e.preventDefault();
@@ -2963,6 +2967,27 @@
     } catch (e) {
       toast(e.message, true);
     }
+    if (uploads.length) attachUploads(uploads);
+  }
+
+  // 粘贴进来的文件：资源管理器里复制的，桌面版拿得到位置，交给服务端；截图这种只有内容的，把内容传上去。
+  // 截图在剪贴板里都叫 image.png，按时间起个名字（「截图 14.03.22.png」），免得几张都一样
+  function onPasteFiles(files) {
+    const paths = [];
+    const uploads = [];
+    const d = new Date();
+    const stamp = `${pad(d.getHours())}.${pad(d.getMinutes())}.${pad(d.getSeconds())}`;
+    files.forEach((file, i) => {
+      const p = desktop && desktop.filePath ? desktop.filePath(file) : '';
+      if (p) return paths.push(p);
+      let name = file.name;
+      if (!name || /^image\.\w+$/i.test(name)) {
+        const ext = ((file.type.split('/')[1] || 'png').match(/^[a-z0-9]+/) || ['png'])[0].replace('jpeg', 'jpg');
+        name = `${tr('截图')} ${stamp}${files.length > 1 ? `-${i + 1}` : ''}.${ext}`;
+      }
+      uploads.push({ file, path: name });
+    });
+    if (paths.length) attachPaths(paths);
     if (uploads.length) attachUploads(uploads);
   }
 
@@ -3579,6 +3604,9 @@
         <div class="field" id="mm-body-wrap"><label for="mm-extra-body">${tr('额外请求参数（JSON）')}</label>
           <textarea class="input mono" id="mm-extra-body" placeholder='{"thinking": {"type": "enabled"}}'>${esc(a.api.extraBody ? JSON.stringify(a.api.extraBody, null, 2) : '')}</textarea>
           <span class="hint">${tr('会合并进每次请求，用来打开某些服务特有的功能，比如 DeepSeek、智谱的思考模式。不熟悉可以不填。')}</span></div>
+        <div class="field" id="mm-ctx-wrap"><label for="mm-ctx">${tr('上下文窗口（token）')}</label>
+          <input class="input mono" id="mm-ctx" inputmode="numeric" autocomplete="off" value="${a.api.contextWindow || ''}" placeholder="${tr('例如')} 128000、128k、1M">
+          <span class="hint">${tr('这个模型一次最多能看多少 token。填了以后，右侧面板的「上下文」能算出用了多少；窗口小的模型，每轮送给它的聊天记录也会少一些。不知道可以不填。')}</span></div>
         <label class="check" data-member-only><input type="checkbox" id="mm-enabled" ${a.enabled !== false ? 'checked' : ''}>${tr('参与接力（取消勾选就暂时停用，不删除）')}</label>
       </details>
     </form>`);
@@ -3734,6 +3762,7 @@
       $('#mm-dsh-wrap', body).hidden = ad !== 'dsh';
       $('#mm-extra-wrap', body).hidden = ad === 'openai';
       $('#mm-body-wrap', body).hidden = ad !== 'openai';
+      $('#mm-ctx-wrap', body).hidden = ad !== 'openai';
       renderModel();
       const cur = permNow();
       $('#mm-perms', body).innerHTML = Object.entries(PERMS)
@@ -3761,9 +3790,12 @@
         renderModel();
       }
     });
+    let remoteContexts = {}; // 接口的模型列表里写着的上下文长度（OpenRouter 这些会给）
     inp.addEventListener('input', () => {
       modelVal = inp.value.trim();
       renderEffort();
+      const ctxInput = $('#mm-ctx', body);
+      if (remoteContexts[modelVal] && !ctxInput.value.trim()) ctxInput.value = remoteContexts[modelVal];
     });
     refreshBtn.addEventListener('click', async () => {
       const ad = adapterNow();
@@ -3784,6 +3816,7 @@
           agentId: agent ? agent.id : '',
         });
         $('#mm-model-list', body).innerHTML = r.models.map((id) => `<option value="${esc(id)}"></option>`).join('');
+        remoteContexts = r.contexts || {};
         hint.textContent = r.models.length ? tr('找到 {n} 个模型，点一下输入框就能选。', { n: r.models.length }) : tr('接口没有返回任何模型，请手动填写。');
       } catch (e) {
         hint.textContent = e.message;
@@ -3809,6 +3842,11 @@
       $$('.swatch', body).forEach((x) => x.setAttribute('aria-pressed', String(x === sw)));
     });
     sync();
+    // 从「上下文」页点「填写上下文窗口」进来：展开「更多设置」，光标放在那一栏
+    if (opts.focus === 'context') {
+      body.querySelector('details.more').open = true;
+      setTimeout(() => $('#mm-ctx', body).focus(), 60);
+    }
 
     const collect = () => {
       const ad = adapterNow();
@@ -3830,6 +3868,7 @@
           apiKey: $('#mm-key', body).value,
           tools: $('#mm-tools', body).checked,
           extraBody: $('#mm-extra-body', body).value.trim(),
+          contextWindow: $('#mm-ctx', body).value.trim(),
         };
       }
       if (ad === 'dsh') data.api = { apiKey: $('#mm-dsh-key', body).value };
@@ -4652,6 +4691,7 @@
       agentById,
       enabledAgents,
       modelName,
+      editMember: (id, opts) => agentById(id) && memberModal(agentById(id), opts),
       initial,
       hashColor,
       fmtTime,

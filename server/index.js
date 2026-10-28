@@ -177,6 +177,14 @@ function parseExtraBody(v) {
   return obj;
 }
 
+// API 模型的上下文窗口（右侧面板的「上下文」、送多少聊天记录都按它）：写成 128000、128k、1M 都行，空着就是不知道
+function parseWindow(v) {
+  if (v === null || v === undefined || v === '' || v === 0) return 0;
+  const n = typeof v === 'number' ? Math.round(v) : models.tokenCount(String(v).trim());
+  if (!(n >= 1000 && n <= 20000000)) throw bad(tr('上下文窗口要写成 token 数，比如 128000、128k 或 1M'));
+  return n;
+}
+
 function cleanAgent(input, room, existing) {
   const a = existing ? { ...existing } : { id: newId('a'), enabled: true, permission: 'edit' };
   if (input.name !== undefined || !existing) {
@@ -219,6 +227,7 @@ function cleanAgent(input, room, existing) {
     // 前端拿到的是打码后的 key；原样传回来就表示不修改
     if (input.api.apiKey !== undefined && input.api.apiKey !== maskKey(prev.apiKey)) api.apiKey = String(input.api.apiKey || '').trim();
     if (input.api.tools !== undefined) api.tools = !!input.api.tools;
+    if (input.api.contextWindow !== undefined) api.contextWindow = parseWindow(input.api.contextWindow);
     if (input.api.extraBody !== undefined) api.extraBody = parseExtraBody(input.api.extraBody);
     a.api = api;
   }
@@ -440,7 +449,7 @@ route('POST', '/api/models/remote', async (req, { body }) => {
     if (saved && (!key || key === maskKey(saved))) key = saved;
   }
   try {
-    return { models: await models.apiModels(body.baseUrl, key) };
+    return await models.apiModels(body.baseUrl, key);
   } catch (e) {
     throw bad(e.message);
   }

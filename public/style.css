@@ -3947,6 +3947,9 @@ body.resizing .term-host {
   font-size: 12.5px;
 }
 .ctx-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   color: var(--faint);
   font-size: 12px;
 }
