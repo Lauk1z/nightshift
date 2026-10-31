@@ -371,6 +371,33 @@ test('API 模型：接口返回 429、5xx 时等一会儿再发（Retry-After �
   }
 });
 
+test('API 模型运行命令：命令启动的后台进程占着输出也不等它，命令结束就返回，并告诉模型后台进程还在', async () => {
+  const api = adapters.get('openai');
+  const ctx = { cwd: tmp(), children: new Set() };
+  // 后台进程活 20 秒、继承了输出管道，命令本身马上结束。以前要等后台进程结束才返回（服务不停就一直等）
+  const bg = 'setTimeout(()=>{},20000)';
+  const cmd =
+    process.platform === 'win32'
+      ? `$p = Start-Process -FilePath node -ArgumentList '-e','${bg}' -PassThru -RedirectStandardOutput bg.out -RedirectStandardError bg.err; "pid=$($p.Id)"`
+      : `node -e '${bg}' & echo pid=$!`;
+  const t0 = Date.now();
+  const out = await api.runCommand(cmd, ctx);
+  const ms = Date.now() - t0;
+  const pid = Number((/pid=(\d+)/.exec(out) || [])[1]);
+  try {
+    assert.ok(ms < 10000, `等了 ${ms} 毫秒`);
+    assert.ok(/^退出码 0\b/.test(out), out);
+    assert.ok(/后台进程还在运行/.test(out), out);
+    assert.strictEqual(ctx.children.size, 0);
+  } finally {
+    if (pid) {
+      try {
+        process.kill(pid);
+      } catch {}
+    }
+  }
+});
+
 test('重新回答：成员把它的某一条回复再做一遍，提示词里写明是哪一条；原来那条留着', async () => {
   const prompts = [];
   const { store, orch, room, events } = setupRoom((agent, prompt) => {

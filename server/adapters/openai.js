@@ -123,26 +123,35 @@ function runCommand(command, ctx) {
       : spawn('/bin/sh', ['-c', command], { cwd: ctx.cwd, env, detached: true });
     ctx.children.add(child);
     let out = '';
+    let done = false;
+    let grace = null;
     const add = (d) => {
+      if (done) return;
       out += d;
       if (out.length > 60000) out = out.slice(-60000);
+    };
+    const result = (code, note = '') => `退出码 ${code}\n${clip((out.trim() + note).trim(), 20000)}`;
+    const finish = (text) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      clearTimeout(grace);
+      ctx.children.delete(child);
+      resolve(text);
     };
     child.stdout.on('data', add);
     child.stderr.on('data', add);
     const timer = setTimeout(() => {
       killTree(child);
-      add('\n（超过 120 秒，已强制结束）');
+      finish(result(null, '\n（超过 120 秒，已强制结束）'));
     }, 120000);
-    child.on('error', (e) => {
-      clearTimeout(timer);
-      ctx.children.delete(child);
-      resolve(`无法运行：${e.message}`);
+    child.on('error', (e) => finish(`无法运行：${e.message}`));
+    // 命令启动的后台进程（Start-Process、& 启动的服务）会继承输出管道，'close' 要等它也结束才来，
+    // 服务不停就一直等。所以命令自己退出以后只再等一小会儿收尾输出，不等后台进程
+    child.on('exit', (code) => {
+      grace = setTimeout(() => finish(result(code, '\n（命令已经结束，它启动的后台进程还在运行，之后的输出看不到。用完记得停掉它。）')), 500);
     });
-    child.on('close', (code) => {
-      clearTimeout(timer);
-      ctx.children.delete(child);
-      resolve(`退出码 ${code}\n${clip(out.trim(), 20000)}`);
-    });
+    child.on('close', (code) => finish(result(code)));
     child.stdin.end();
   });
 }
@@ -397,6 +406,7 @@ module.exports = {
   retryWaits,
   apiUsage,
   parseDsml,
+  runCommand,
   detect: async () => ({ installed: true }),
   run({ agent, cwd, apiMessages, emit, askUser }) {
     const ac = new AbortController();
