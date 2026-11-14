@@ -24,7 +24,7 @@
 
 ## 安裝
 
-1. 到 [Releases](https://github.com/Lauk1z/nightshift/releases/latest) 下載 `Nightshift-Setup-<版本>.exe` 安裝（`-portable.exe` 是免安裝版）。Windows 提示「已保護你的電腦」時，點「更多資訊」→「仍要執行」。
+1. 到 [Releases](https://github.com/Lauk1z/nightshift/releases/latest) 下載 `Nightshift-Setup-<版本>.exe` 安裝。Windows 提示「已保護你的電腦」時，點「更多資訊」→「仍要執行」。
 2. 裝好並登入至少一個 AI 工具。只有模型服務的 API Key（DeepSeek、通義千問這些）也行，不用裝，開啟 Nightshift 直接填（見下面的「開始使用」）：
 
 | AI | 安裝 | 登入 |
@@ -41,7 +41,7 @@
 
 左下角的插頭顯示各工具能不能用。裝了新工具後點「重新檢測」，不用重啟。
 
-安裝版會自動更新：新版本在背景下載好後，左下角出現「重啟以完成更新」。免安裝版不會自動更新。不想裝 exe 的話，雙擊 `start.bat` 在瀏覽器裡用（需要 [Node.js](https://nodejs.org/) 18 以上）。
+安裝版會自動更新：新版本在背景下載好後，左下角出現「重啟以完成更新」。不想裝 exe 的話，雙擊 `start.bat` 在瀏覽器裡用（需要 [Node.js](https://nodejs.org/) 18 以上）。
 
 ## 開始使用
 

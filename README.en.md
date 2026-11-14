@@ -24,7 +24,7 @@ It's called Nightshift in dark mode and Dayshift in light mode.
 
 ## Install
 
-1. Download `Nightshift-Setup-<version>.exe` from [Releases](https://github.com/Lauk1z/nightshift/releases/latest) and install it (`-portable.exe` runs without installing). If Windows says it protected your PC, click "More info" → "Run anyway".
+1. Download `Nightshift-Setup-<version>.exe` from [Releases](https://github.com/Lauk1z/nightshift/releases/latest) and install it. If Windows says it protected your PC, click "More info" → "Run anyway".
 2. Install and sign in to at least one AI tool. An API key for a model service (DeepSeek, Qwen and so on) also works, with nothing to install: enter it when Nightshift opens (see Getting started):
 
 | AI | Install | Sign in |
@@ -41,7 +41,7 @@ It's called Nightshift in dark mode and Dayshift in light mode.
 
 The plug icon at the bottom left shows which tools are ready. After installing a new one, click "Re-detect"; no restart needed.
 
-The installed version updates itself: once a new version has downloaded in the background, "Restart to update" appears at the bottom left. The portable version doesn't update itself. To skip the exe, double-click `start.bat` to use it in your browser (needs [Node.js](https://nodejs.org/) 18 or later).
+The installed version updates itself: once a new version has downloaded in the background, "Restart to update" appears at the bottom left. To skip the exe, double-click `start.bat` to use it in your browser (needs [Node.js](https://nodejs.org/) 18 or later).
 
 ## Getting started
 
