@@ -398,6 +398,43 @@ test('API 模型运行命令：命令启动的后台进程占着输出也不等�
   }
 });
 
+test('查看改动：用撤销存下的改之前、改之后的内容逐行对比；新建、删掉、太大、二进制、只改换行符的都写明（接口见「设置和用量接口」）', () => {
+  const { diffText, fileChanges } = require('../server/diff');
+  const r = diffText('a\nb\nc\n', 'a\nB\nc\n');
+  assert.deepStrictEqual([r.add, r.del], [1, 1]);
+  assert.deepStrictEqual(r.hunks[0].lines, [
+    ['ctx', 1, 1, 'a'],
+    ['del', 2, null, 'b'],
+    ['add', null, 2, 'B'],
+    ['ctx', 3, 3, 'c'],
+  ]);
+  // 隔得远的两处分成两段，每段前后带 3 行
+  const lines = Array.from({ length: 30 }, (_, i) => 'line' + i);
+  const changed = lines.slice();
+  changed[2] = 'X';
+  changed[25] = 'Y';
+  assert.deepStrictEqual(
+    diffText(lines.join('\n'), changed.join('\n')).hunks.map((h) => [h.lines[0][1], h.lines[h.lines.length - 1][1]]),
+    [
+      [1, 6],
+      [23, 29],
+    ]
+  );
+  assert.deepStrictEqual(diffText('a\r\nb\r\n', 'a\nb\n'), { add: 0, del: 0, hunks: [], eolOnly: true });
+  // 整个重写、又很长：按整段替换算，只显示前面一部分
+  const long = (p) => Array.from({ length: 6000 }, (_, i) => p + i).join('\n');
+  const whole = diffText(long('a'), long('b'));
+  assert.deepStrictEqual([whole.add, whole.del, whole.truncated], [6000, 6000, true]);
+  // 撤销记录里的一个文件
+  const blobs = { h1: Buffer.from('x\n'), h2: Buffer.from('x\ny\n'), bin: Buffer.from([1, 0, 2]) };
+  const read = (h) => blobs[h] || null;
+  assert.deepStrictEqual(fileChanges({ path: 'n.txt', change: 'add', after: 'h1' }, read).hunks[0].lines, [['add', null, 1, 'x']]);
+  assert.strictEqual(fileChanges({ path: 'd.txt', change: 'delete', before: 'h2' }, read).del, 2);
+  assert.strictEqual(fileChanges({ path: 'big.log', change: 'update', big: true }, read).big, true);
+  assert.strictEqual(fileChanges({ path: 'p.png', change: 'update', before: 'bin', after: 'h1' }, read).binary, true);
+  assert.strictEqual(fileChanges({ path: 'gone.txt', change: 'update', before: 'nope', after: 'h1' }, read).missing, true);
+});
+
 test('重新回答：成员把它的某一条回复再做一遍，提示词里写明是哪一条；原来那条留着', async () => {
   const prompts = [];
   const { store, orch, room, events } = setupRoom((agent, prompt) => {
@@ -2173,7 +2210,7 @@ test('使用说明：只给 GitHub 看的整行 HTML（图标、截图、语言�
   }
 });
 
-test('设置和用量接口；换了语言，服务端的报错和 boot.js 跟着换', async () => {
+test('设置和用量接口；换了语言，服务端的报错和 boot.js 跟着换；用 API Key 开始记下的模型（Key 打码）主界面的新会话都带上', async () => {
   const { start } = require('../server');
   const dir = tmp();
   // 先在数据文件夹里放一个会话，里面有一条带交付验收清单的发言（服务端启动时读进来）
@@ -2185,6 +2222,15 @@ test('设置和用量接口；换了语言，服务端的报错和 boot.js 跟�
     { id: 'source', s: 'pass', f: [{ c: 'src-ok', files: ['app.py'], n: 1 }] },
   ];
   const smsg = seed.addMessage(sroom.id, { from: 'x', name: 'GPT', kind: 'agent', status: 'done', text: '做好了，请验收', acceptance: { at: 1, since: 0, report: false, items: accItems, cleanup: [] } });
+  // 还有一个项目里的会话：一条发言带撤销记录（改之前、改之后的内容存在 checkpoints 里），一条没有，用来测「查看改动」
+  const { Checkpoints } = require('../server/checkpoints');
+  const dproject = seed.createProject({ name: '改动', workspace: tmp() });
+  const droom = seed.createRoom({ projectId: dproject.id, name: '改动' });
+  const cps = new Checkpoints(path.join(dir, 'checkpoints'));
+  const dbefore = cps.put(dproject.id, Buffer.from('const a = 1;\n'));
+  const dafter = cps.put(dproject.id, Buffer.from('const a = 2;\n'));
+  const dmsg = seed.addMessage(droom.id, { from: 'x', name: 'GPT', kind: 'agent', status: 'done', text: '改好了', undo: { files: [{ path: 'a.js', change: 'update', before: dbefore, after: dafter }] } });
+  const dplain = seed.addMessage(droom.id, { from: 'x', name: 'GPT', kind: 'agent', status: 'done', text: '没改文件' });
   const srv = await start({ dataDir: dir, port: 0 });
   const call = (method, p, body) =>
     new Promise((resolve, reject) => {
@@ -2204,6 +2250,24 @@ test('设置和用量接口；换了语言，服务端的报错和 boot.js 跟�
     });
   try {
     assert.strictEqual((await call('GET', '/api/settings')).json().language, 'zh-Hans');
+    // 查看改动：按那条发言的撤销记录逐行对比；没有记录的是 404
+    assert.deepStrictEqual((await call('GET', `/api/rooms/${droom.id}/messages/${dmsg.id}/changes`)).json().files, [
+      {
+        path: 'a.js',
+        change: 'update',
+        add: 1,
+        del: 1,
+        hunks: [
+          {
+            lines: [
+              ['del', 1, null, 'const a = 1;'],
+              ['add', null, 1, 'const a = 2;'],
+            ],
+          },
+        ],
+      },
+    ]);
+    assert.strictEqual((await call('GET', `/api/rooms/${droom.id}/messages/${dplain.id}/changes`)).status, 404);
     assert.match((await call('POST', '/api/rooms', { name: '' })).json().error, /请给项目起个名字/);
     let boot = (await call('GET', '/boot.js')).text;
     assert.match(boot, /window\.__BOOT__ = \{"settings"/);
@@ -2461,6 +2525,7 @@ test('设置和用量接口；换了语言，服务端的报错和 boot.js 跟�
     await call('DELETE', `/api/projects/${made.project.id}`);
     assert.strictEqual((await call('GET', `/api/rooms/${rid}`)).status, 404);
     assert.ok(!(await call('GET', '/api/projects')).json().some((p) => p.id === made.project.id));
+    await checkHomeApi(call, dir);
     // 不是本机页面发来的修改请求要拒绝
     assert.strictEqual((await new Promise((resolve) => http.request(srv.url + '/api/settings', { method: 'PATCH' }, (r) => resolve(r.statusCode)).end('{}'))), 403);
   } finally {
@@ -2468,6 +2533,57 @@ test('设置和用量接口；换了语言，服务端的报错和 boot.js 跟�
     await srv.close();
   }
 });
+
+// 用 API Key 开始（主界面上没装命令行 AI 时）：设置里记下 API 模型（Key 打码），主界面的新会话都带上它；
+// 查模型时用存下的 Key；换了接口地址旧 Key 不跟过去；不用了就不带。服务一个进程只能启动一次，所以在上面那个测试的服务里跑
+async function checkHomeApi(call, dir) {
+  // 假的模型服务：只认 sk-home-123456 这个 Key
+  const provider = http.createServer((req, res) => {
+    const ok = req.headers.authorization === 'Bearer sk-home-123456';
+    res.writeHead(ok ? 200 : 401, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(ok ? { data: [{ id: 'm-small', context_length: 64000 }, { id: 'm-big' }] } : { error: { message: 'bad key' } }));
+  });
+  await new Promise((r) => provider.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${provider.address().port}/v1`;
+  const onDisk = () => JSON.parse(fs.readFileSync(path.join(dir, 'settings.json'), 'utf8')).homeApi;
+  try {
+    // 不对的设置不收：地址、模型名、名字
+    assert.strictEqual((await call('PATCH', '/api/settings', { homeApi: { name: 'DeepSeek', baseUrl: 'ftp://x', model: 'm' } })).status, 400);
+    assert.strictEqual((await call('PATCH', '/api/settings', { homeApi: { name: 'DeepSeek', baseUrl: base } })).status, 400);
+    assert.strictEqual((await call('PATCH', '/api/settings', { homeApi: { name: 'a b', baseUrl: base, model: 'm' } })).status, 400);
+    const s = (await call('PATCH', '/api/settings', { homeApi: { name: 'DeepSeek', baseUrl: base, apiKey: 'sk-home-123456', model: 'm-small', contextWindow: 64000 } })).json();
+    assert.deepStrictEqual([s.homeApi.apiKey, s.homeApi.hasKey, s.homeApi.model, s.homeApi.contextWindow], ['sk-••••3456', true, 'm-small', 64000]);
+    assert.strictEqual(onDisk().apiKey, 'sk-home-123456');
+    assert.strictEqual((await call('GET', '/api/settings')).json().homeApi.apiKey, 'sk-••••3456');
+    assert.ok(!(await call('GET', '/boot.js')).text.includes('sk-home-123456'), 'boot.js 里的设置也打码');
+    // 查模型：Key 打着码时用存下的；接口地址换了就不用
+    assert.deepStrictEqual((await call('POST', '/api/models/remote', { baseUrl: base, apiKey: s.homeApi.apiKey, home: true })).json().models.sort(), ['m-big', 'm-small']);
+    assert.strictEqual((await call('POST', '/api/models/remote', { baseUrl: base.replace('/v1', '/v2'), apiKey: s.homeApi.apiKey, home: true })).status, 400);
+    // 主界面的新会话带上它：排在命令行工具后面，API 模型、运行命令前问我、能读写文件；名字和装好的命令行工具撞了就加编号
+    const chat = (await call('POST', '/api/chats', { template: 'all' })).json();
+    const mate = chat.agents[chat.agents.length - 1];
+    assert.deepStrictEqual(
+      [mate.adapter, mate.model, mate.permission, mate.api.tools, mate.api.contextWindow, mate.api.hasKey, mate.api.baseUrl],
+      ['openai', 'm-small', 'ask', true, 64000, true, base]
+    );
+    assert.match(mate.name, /^DeepSeek(-\d+)?$/);
+    assert.strictEqual(new Set(chat.agents.map((a) => a.name.toLowerCase())).size, chat.agents.length);
+    // 主界面上选的「发给谁」、带过去的模型按名字对上
+    const picked = (await call('POST', '/api/chats', { template: 'all', models: { [mate.name]: { model: 'm-small', effort: '' } }, to: mate.name })).json();
+    assert.strictEqual(picked.settings.defaultAgent, picked.agents[picked.agents.length - 1].id);
+    // 打码的 Key 原样传回来：不改；换了接口地址：旧 Key 不跟过去
+    await call('PATCH', '/api/settings', { homeApi: { ...s.homeApi, model: 'm-big' } });
+    assert.deepStrictEqual([onDisk().apiKey, onDisk().model], ['sk-home-123456', 'm-big']);
+    const moved = (await call('PATCH', '/api/settings', { homeApi: { ...s.homeApi, baseUrl: 'https://api.example.com/v1' } })).json();
+    assert.deepStrictEqual([moved.homeApi.hasKey, onDisk().apiKey], [false, '']);
+    // 不用了：设置里去掉，新会话不再带
+    assert.strictEqual((await call('PATCH', '/api/settings', { homeApi: null })).json().homeApi, undefined);
+    assert.strictEqual(onDisk(), undefined);
+    assert.ok(!(await call('POST', '/api/chats', { template: 'all' })).json().agents.some((a) => a.adapter === 'openai'));
+  } finally {
+    provider.close();
+  }
+}
 
 // ---------- 新接入的命令行工具：用假的程序按各家的 JSON 格式吐事件，检查参数、文字、工具、会话和用量 ----------
 // 假程序收到 --help 就打印 FAKE_HELP；正常运行时把参数和 stdin（或 --prompt-file 的内容）记到 FAKE_LOG，

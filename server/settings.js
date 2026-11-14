@@ -1,5 +1,6 @@
 'use strict';
-// 应用设置（不分项目）：你的名字和头像颜色、外观、界面语言、发送键、桌面通知。
+// 应用设置（不分项目）：你的名字和头像颜色、外观、界面语言、发送键、桌面通知，
+// 还有主界面「用 API Key 开始」记下的 API 模型（homeApi，Key 也在这里，发给界面前打码，见 index.js 的 publicSettings）。
 // 存在 data/settings.json；桌面版启动时也会读它（外观要在窗口出来之前定好）。
 const fs = require('fs');
 const path = require('path');
@@ -26,6 +27,13 @@ function clean(input, prev) {
   if (input.language !== undefined && LANGS.includes(input.language)) out.language = input.language;
   if (input.sendKey !== undefined && SEND_KEYS.includes(input.sendKey)) out.sendKey = input.sendKey;
   if (input.notify !== undefined) out.notify = !!input.notify;
+  // 检查在 index.js 的 cleanHomeApi 里做，这里只保证存下来的样子对；null 是不用了
+  if (input.homeApi === null) delete out.homeApi;
+  else if (input.homeApi && typeof input.homeApi === 'object' && input.homeApi.baseUrl && input.homeApi.model) {
+    const h = input.homeApi;
+    const win = Math.round(Number(h.contextWindow) || 0);
+    out.homeApi = { name: String(h.name || ''), baseUrl: String(h.baseUrl), apiKey: String(h.apiKey || ''), model: String(h.model), ...(win > 0 ? { contextWindow: win } : {}) };
+  }
   return out;
 }
 

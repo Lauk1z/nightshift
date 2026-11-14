@@ -18,6 +18,7 @@ const tr = i18n.t; // 给用户看的文字跟着设置里的语言（AI 看的�
 const adapters = require('./adapters');
 const models = require('./models');
 const { exportMarkdown, exportName } = require('./export');
+const { fileChanges } = require('./diff');
 const { Checkpoints } = require('./checkpoints');
 const skills = require('./skills');
 const files = require('./files');
@@ -87,6 +88,17 @@ function publicAgent(a) {
   if (out.api) out.api = { ...out.api, apiKey: maskKey(out.api.apiKey), hasKey: !!out.api.apiKey };
   return out;
 }
+
+// 设置发给界面时，「用 API Key 开始」记下的 Key 也打码（见 cleanHomeApi）
+function publicSettings(s) {
+  return s.homeApi ? { ...s, homeApi: { ...s.homeApi, apiKey: maskKey(s.homeApi.apiKey), hasKey: !!s.homeApi.apiKey } } : s;
+}
+
+// 接口地址比较：末尾的 / 和 /chat/completions 不算，不分大小写
+const sameUrl = (a, b) => {
+  const n = (u) => String(u || '').trim().replace(/\/+$/, '').replace(/\/chat\/completions$/i, '').toLowerCase();
+  return n(a) === n(b);
+};
 
 function publicRoom(room) {
   const project = store.getProject(room.projectId);
@@ -240,6 +252,44 @@ function cleanAgent(input, room, existing) {
   return a;
 }
 
+// 主界面的「用 API Key 开始」：没装命令行 AI 的人填一个模型服务的 Key 就能用。记在设置里（homeApi），
+// 之后主界面的每个新会话都带上这个 API 模型成员（见 homeApiAgent）。
+// Key 原样传回打码的那个就是不改；换了接口地址时旧 Key 不跟过去，免得把这家的 Key 发给另一家
+function cleanHomeApi(input, prev) {
+  if (!input || typeof input !== 'object') throw bad(tr('API 模型的设置不正确'));
+  const old = prev || {};
+  const name = String(input.name || '').trim();
+  if (!name || /[\s@`]/.test(name) || [...name].length > 16 || RESERVED.some((r) => r.toLowerCase() === name.toLowerCase())) throw bad(tr('API 模型的设置不正确'));
+  const baseUrl = String(input.baseUrl || '').trim();
+  if (!/^https?:\/\/\S+$/i.test(baseUrl)) throw bad(tr('接口地址要以 http:// 或 https:// 开头'));
+  const model = checkModel(input.model);
+  if (!model) throw bad(tr('API 模型需要填写模型名称'));
+  const keep = input.apiKey === undefined || input.apiKey === maskKey(old.apiKey);
+  const apiKey = keep ? (sameUrl(baseUrl, old.baseUrl) ? old.apiKey || '' : '') : String(input.apiKey || '').trim();
+  const contextWindow = parseWindow(input.contextWindow);
+  return { name, baseUrl, apiKey, model, ...(contextWindow ? { contextWindow } : {}) };
+}
+
+// 「用 API Key 开始」记下的成员。名字和命令行工具撞了就加编号（DeepSeek-2），和模板里同一个工具担任好几个角色时一样。
+// 权限是「运行命令前问我」：能跑测试、起服务，每条命令你点了允许才运行
+function homeApiAgent(h, agents) {
+  const taken = new Set(agents.map((a) => a.name.toLowerCase()));
+  let name = h.name;
+  for (let n = 2; taken.has(name.toLowerCase()); n++) name = [...h.name].slice(0, 13).join('') + '-' + n;
+  return {
+    id: newId('a'),
+    name,
+    adapter: 'openai',
+    model: h.model,
+    role: '',
+    instructions: '',
+    permission: 'ask',
+    color: PALETTE[agents.length % PALETTE.length],
+    enabled: true,
+    api: { baseUrl: h.baseUrl, apiKey: h.apiKey || '', tools: true, ...(h.contextWindow ? { contextWindow: h.contextWindow } : {}) },
+  };
+}
+
 // 团队模板：根据这台电脑装了哪些 AI 工具来分配角色。职责文字按建项目时的语言现取
 const ROLES = () => ({
   design: {
@@ -263,9 +313,10 @@ const NAMES = { codex: 'GPT', claude: 'Claude', opencode: 'OpenCode', gemini: 'G
 function templateAgents(kind, env) {
   if (kind === 'blank') return [];
   const has = (id) => env[id] && env[id].installed;
-  // all：这台电脑上装好的每个命令行工具一个成员，不分工（主界面上的新会话）。顺序和界面上列工具的一样
+  // all：这台电脑上装好的每个命令行工具一个成员，不分工（主界面上的新会话）。顺序和界面上列工具的一样；
+  // 在主界面「用 API Key 开始」接过模型的，最后再加上它
   if (kind === 'all') {
-    return adapters.list
+    const agents = adapters.list
       .map((a) => a.id)
       .filter((id) => NAMES[id] && has(id))
       .map((adapter, i) => ({
@@ -279,6 +330,9 @@ function templateAgents(kind, env) {
         color: PALETTE[i % PALETTE.length],
         enabled: true,
       }));
+    const home = settings && settings.get().homeApi;
+    if (home) agents.push(homeApiAgent(home, agents));
+    return agents;
   }
   const ROLE = ROLES();
   const first = (...ids) => ids.find(has);
@@ -396,11 +450,13 @@ route('GET', '/api/env', async (req, { query }) => {
 });
 
 // ---------- 应用设置（你的名字、外观、语言……）和用量统计 ----------
-route('GET', '/api/settings', async () => settings.get());
+route('GET', '/api/settings', async () => publicSettings(settings.get()));
 
 route('PATCH', '/api/settings', async (req, { body }) => {
   const prev = settings.get();
-  const next = settings.update(body || {});
+  const input = { ...(body || {}) };
+  if (input.homeApi !== undefined) input.homeApi = input.homeApi === null ? null : cleanHomeApi(input.homeApi, prev.homeApi);
+  const next = publicSettings(settings.update(input));
   if (next.language !== prev.language) models.clearCache(); // 模型说明是按语言生成后缓存的
   bus.send('settings', next);
   return next;
@@ -444,7 +500,8 @@ route('GET', '/api/models', async (req, { query }) => {
   return models.catalog(adapter, query.get('refresh') === '1');
 });
 
-// API 模型：向接口查询可用模型。key 没改动（打码状态）时用已保存的那个
+// API 模型：向接口查询可用模型。key 没改动（打码状态）时用已保存的那个：成员的，
+// 或者主界面「用 API Key 开始」记下的（home，只在接口地址没换时用）
 route('POST', '/api/models/remote', async (req, { body }) => {
   let key = String(body.apiKey || '');
   if (body.roomId && body.agentId) {
@@ -452,6 +509,10 @@ route('POST', '/api/models/remote', async (req, { body }) => {
     const agent = room && [...room.agents, room.reviewer].find((a) => a && a.id === body.agentId); // 也可能是专门的审查模型
     const saved = agent && agent.api && agent.api.apiKey;
     if (saved && (!key || key === maskKey(saved))) key = saved;
+  }
+  if (body.home) {
+    const h = settings.get().homeApi;
+    if (h && h.apiKey && sameUrl(body.baseUrl, h.baseUrl) && (!key || key === maskKey(h.apiKey))) key = h.apiKey;
   }
   try {
     return await models.apiModels(body.baseUrl, key);
@@ -976,6 +1037,21 @@ route('POST', '/api/rooms/:id/messages/:mid/again', async (req, { params }) => {
   return { ok: true };
 });
 
+// 查看某一轮改了什么：用撤销存下的改之前、改之后的内容逐行对比（见 diff.js）。撤销过的也能看（看的是这一轮当时的改动）
+route('GET', '/api/rooms/:id/messages/:mid/changes', async (req, { params }) => {
+  const room = needRoom(params.id);
+  const m = store.messages(room.id).find((x) => x.id === params.mid);
+  if (!m || !m.undo) throw new HttpError(404, tr('这一轮没有记下改动'));
+  const read = (h) => {
+    try {
+      return checkpoints.get(room.projectId, h);
+    } catch {
+      return null;
+    }
+  };
+  return { files: m.undo.files.map((e) => fileChanges(e, read)) };
+});
+
 // 撤销某一轮的改动（redo：恢复）：文件现在和这一轮结束时一样的才改回去，之后又被改过的不动。
 // 有成员正在干活时不行（文件还在变）。改回去以后在群里留一句，成员也看得到（它们得知道文件变了）
 route('POST', '/api/rooms/:id/messages/:mid/undo', async (req, { params, body }) => {
@@ -1336,7 +1412,7 @@ function bootScript() {
   try {
     user = os.userInfo().username;
   } catch {}
-  const lines = [`window.__BOOT__ = ${JSON.stringify({ settings: st, user })};`];
+  const lines = [`window.__BOOT__ = ${JSON.stringify({ settings: publicSettings(st), user })};`];
   const d = i18n.dict(st.language);
   if (d) lines.push(`window.I18N.preload(${JSON.stringify(st.language)}, ${JSON.stringify(d)});`);
   lines.push(`window.I18N.setLang(${JSON.stringify(st.language)});`);

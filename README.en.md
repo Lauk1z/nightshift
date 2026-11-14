@@ -25,7 +25,7 @@ It's called Nightshift in dark mode and Dayshift in light mode.
 ## Install
 
 1. Download `Nightshift-Setup-<version>.exe` from [Releases](https://github.com/Lauk1z/nightshift/releases/latest) and install it (`-portable.exe` runs without installing). If Windows says it protected your PC, click "More info" → "Run anyway".
-2. Install and sign in to at least one AI tool:
+2. Install and sign in to at least one AI tool. An API key for a model service (DeepSeek, Qwen and so on) also works, with nothing to install: enter it when Nightshift opens (see Getting started):
 
 | AI | Install | Sign in |
 | --- | --- | --- |
@@ -46,6 +46,8 @@ The installed version updates itself: once a new version has downloaded in the b
 ## Getting started
 
 Nightshift opens on a new chat: type what you need and send it, no folder required. Every AI installed on this computer is a member, with no roles assigned. Pick who goes first at the bottom right of the message box, and hover over it to switch models; your next new chat starts with the same choices. The chat's files go in a folder Nightshift makes for it. "New chat" in the sidebar brings you back here any time.
+
+If no AI tools are installed, the home screen shows "Start with your own API key": pick a service (DeepSeek, Qwen, Kimi, GLM, OpenRouter, local Ollama…), enter your key, and the models are listed for you; then click Start. Every new chat after that includes this model, with "Ask before running commands" permission. You can add one with tools installed too: click the member at the bottom right of the message box and choose "Add a model with an API key". That's also where you change the model or key, or stop including it.
 
 To work on your own code, click "New project" and pick a folder. A project can hold several chats that share the folder, each with its own members and history.
 
@@ -68,6 +70,7 @@ Messages that don't @mention anyone go to the member shown at the bottom right o
 
 - Under a member's reply, "Answer again" has it redo that reply with a fresh approach; the original stays.
 - Your own messages have "Edit and resend": the edited text goes out as a new message, the original is marked Edited, and members go by the new one.
+- When a member changed files in a turn, "View changes" under its file cards shows exactly which lines were added and removed, section by section like git diff.
 - When a member changed files in a turn, its reply has "Undo this turn's changes": new files are removed, changed files reverted and deleted files put back. Files changed since are left alone, and "Restore" brings the changes back. Before each turn Nightshift keeps a copy of the project's files (files over 2 MB aren't kept, so their changes can't be undone).
 
 ## The interface

@@ -160,15 +160,16 @@
   // 桌面版（exe）里由 electron/preload.js 提供；浏览器里打开时没有
   const desktop = window.desktop || null;
 
+  // 常用的模型服务：显示的名字、接口地址，和「用 API Key 开始」时成员叫什么（不能和命令行工具的成员撞名，所以 OpenAI 不叫 GPT）
   const API_PRESETS = [
-    ['DeepSeek', 'https://api.deepseek.com/v1'],
-    [tr('通义千问（阿里云百炼）'), 'https://dashscope.aliyuncs.com/compatible-mode/v1'],
-    [tr('Kimi（月之暗面）'), 'https://api.moonshot.cn/v1'],
-    [tr('智谱 GLM'), 'https://open.bigmodel.cn/api/paas/v4'],
-    ['OpenAI', 'https://api.openai.com/v1'],
-    ['Google Gemini', 'https://generativelanguage.googleapis.com/v1beta/openai'],
-    ['OpenRouter', 'https://openrouter.ai/api/v1'],
-    [tr('Ollama（本机）'), 'http://127.0.0.1:11434/v1'],
+    ['DeepSeek', 'https://api.deepseek.com/v1', 'DeepSeek'],
+    [tr('通义千问（阿里云百炼）'), 'https://dashscope.aliyuncs.com/compatible-mode/v1', tr('千问')],
+    [tr('Kimi（月之暗面）'), 'https://api.moonshot.cn/v1', 'Kimi'],
+    [tr('智谱 GLM'), 'https://open.bigmodel.cn/api/paas/v4', 'GLM'],
+    ['OpenAI', 'https://api.openai.com/v1', 'OpenAI'],
+    ['Google Gemini', 'https://generativelanguage.googleapis.com/v1beta/openai', 'Gemini'],
+    ['OpenRouter', 'https://openrouter.ai/api/v1', 'OpenRouter'],
+    [tr('Ollama（本机）'), 'http://127.0.0.1:11434/v1', 'Ollama'],
   ];
   // 接口地址对得上哪个常用服务（末尾的 / 和 /chat/completions 不算）：下拉框就显示那个服务
   const normUrl = (u) => String(u || '').trim().replace(/\/+$/, '').replace(/\/chat\/completions$/i, '').toLowerCase();
@@ -792,13 +793,15 @@
             </div></div>`)
         );
       } else {
-        // 主界面：图标、按时间打招呼，下面就是输入框（像 Claude 的新对话）
+        // 主界面：图标、按时间打招呼，下面就是输入框（像 Claude 的新对话）。还没有成员时，输入框上面是「用 API Key 开始」
         main.innerHTML = `<div class="home"><div class="home-inner">
             <div class="home-mark">${brandMark()}</div>
             <h1 class="home-greet" id="homeGreet">${esc(greeting())}</h1>
+            <section class="home-start" id="homeStart" aria-labelledby="homeStartTitle" hidden></section>
             ${composerHtml(tr('想好了就开始吧。'))}
           </div></div>${dropZoneHtml()}`;
         setupComposer();
+        renderHomeStart();
       }
       renderHeader();
       return;
@@ -839,8 +842,8 @@
 
   // ---------- 主界面：一个还没建的新会话 ----------
   // 打开 Nightshift、点「新建会话」都到这里，发第一条消息时才建会话（见 sendFromHome），所以不会留下空的会话。
-  // 成员是这台电脑上装好的每个命令行 AI，不分工（和服务端的 all 模板一样）。在这里选的「发给谁」、换的模型记下来，
-  // 下次的新会话接着用。「用相同的成员新建会话」（from）照搬那个会话的成员
+  // 成员是这台电脑上装好的每个命令行 AI，不分工，再加上「用 API Key 开始」接过的模型（和服务端的 all 模板一样）。
+  // 在这里选的「发给谁」、换的模型记下来，下次的新会话接着用。「用相同的成员新建会话」（from）照搬那个会话的成员
   const HOME_PICKS = 'agentchat.home';
   function homePicks() {
     try {
@@ -856,6 +859,7 @@
     const to = agentById(S.home.defaultAgent);
     if (to) p.to = to.adapter;
     for (const a of S.home.agents) {
+      if (a.adapter === 'openai') continue; // API 模型的模型记在设置里（见 homeApiModal）
       if (a.model) p.models[a.adapter] = a.model;
       else delete p.models[a.adapter];
     }
@@ -874,8 +878,19 @@
       color: PALETTE[i % PALETTE.length],
       enabled: true,
     }));
+    const h = S.settings && S.settings.homeApi;
+    if (h) agents.push(homeApiMember(h, agents));
     const to = agents.find((a) => a.adapter === picks.to) || agents[0];
     return { from: '', agents, defaultAgent: to ? to.id : '' };
+  }
+  // 「用 API Key 开始」接的模型（存在设置里，Key 打了码）。起名的规则和服务端的 homeApiAgent 一样：
+  // 和命令行工具的成员撞名就加编号。建会话时按名字对上「发给谁」，所以两边必须一致
+  const HOME_API_ID = 'home:openai';
+  function homeApiMember(h, agents) {
+    const taken = new Set(agents.map((a) => a.name.toLowerCase()));
+    let name = h.name;
+    for (let n = 2; taken.has(name.toLowerCase()); n++) name = [...h.name].slice(0, 13).join('') + '-' + n;
+    return { id: HOME_API_ID, name, adapter: 'openai', model: h.model, role: '', color: PALETTE[agents.length % PALETTE.length], enabled: true, api: { ...h } };
   }
   // 换过模型的成员：在后台读它的模型目录，选成员的菜单里就能显示模型的正式名字
   function loadHomeCatalogs() {
@@ -904,6 +919,160 @@
     loadSkills(null); // 主界面上用 / 选的是这台电脑上装好的技能
     const input = inputEl();
     if (input) input.focus();
+  }
+
+  // ---------- 用 API Key 开始 ----------
+  // 这台电脑上没检测到命令行 AI、也还没接过模型时，主界面的输入框上面是这张卡片：选服务、填 Key、选模型，
+  // 记进设置（服务端的 cleanHomeApi），之后的新会话都带上这个 API 模型成员。检测结果出来之前不显示，
+  // 免得装了工具的人也看到它闪一下。已经有成员时，从输入框右下角的成员菜单里打开同一张表单（homeApiModal）
+  function renderHomeStart() {
+    const box = $('#homeStart');
+    if (!box) return;
+    const show = !!(S.env && S.home && !S.home.from && !S.home.agents.length);
+    if (!show) {
+      box.hidden = true;
+      box.innerHTML = '';
+      return;
+    }
+    if (!box.hidden) return; // 已经在了：别把填了一半的清掉
+    box.hidden = false;
+    box.innerHTML = `<h2 id="homeStartTitle">${esc(tr('用自己的 API Key 开始'))}</h2>
+      <p class="lead">${esc(tr('这台电脑上还没有检测到 AI 工具。填一个模型服务的 API Key，就能直接开始。'))}</p>`;
+    const form = apiStartForm(null, { submit: tr('开始使用') });
+    form.onSaved = homeApiSaved;
+    box.append(form.el, el(`<p class="hint">${esc(tr('也可以装 Claude Code、Codex 这些命令行 AI：左下角的插头里有安装方法。'))}</p>`));
+  }
+
+  // 选服务、填 Key、选模型的表单。填好 Key（或者选了不用 Key 的本机 Ollama）就去接口那里查模型列表；
+  // Key 打着码时服务端用存下的那个（接口地址没换的话）
+  function apiStartForm(h, opts = {}) {
+    const preset = h ? presetFor(h.baseUrl) : API_PRESETS[0][1];
+    const custom = !!h && !preset;
+    const keyNote = tr('Key 只保存在这台电脑的 data 文件夹里，不会发给任何人（除了你填的接口地址）。');
+    const form = el(`<form class="api-start" autocomplete="off" novalidate>
+      <div class="row">
+        <div class="field grow"><label for="as-provider">${esc(tr('服务'))}</label>
+          <select class="input" id="as-provider">${API_PRESETS.map(([n, u]) => `<option value="${esc(u)}" ${u === preset ? 'selected' : ''}>${esc(n)}</option>`).join('')}
+            <option value="" ${custom ? 'selected' : ''}>${esc(tr('其他（自己填接口地址）'))}</option></select></div>
+        <div class="field grow"><label for="as-key">API Key</label>
+          <input class="input mono" id="as-key" type="password" value="${esc(h ? h.apiKey || '' : '')}" placeholder="${esc(tr('sk-…（本机 Ollama 可以不填）'))}"></div>
+      </div>
+      <div class="field" id="as-base-wrap" ${custom ? '' : 'hidden'}><label for="as-base">${esc(tr('接口地址（Base URL）'))}</label>
+        <input class="input mono" id="as-base" value="${esc(custom ? h.baseUrl : '')}" placeholder="https://api.example.com/v1"></div>
+      <div class="field"><label for="as-model">${esc(tr('模型'))}</label>
+        <input class="input mono" id="as-model" list="as-models" value="${esc(h ? h.model : '')}" placeholder="${esc(tr('填好 Key 以后自动列出'))}">
+        <datalist id="as-models"></datalist><span class="hint" id="as-hint" aria-live="polite"></span></div>
+      ${opts.submit ? `<div class="api-start-foot"><span class="hint">${esc(keyNote)}</span><button type="submit" class="btn primary">${esc(opts.submit)}</button></div>` : `<p class="hint">${esc(keyNote)}</p>`}
+    </form>`);
+    const $f = (s) => form.querySelector(s);
+    const isLocal = (u) => /^https?:\/\/(127\.0\.0\.1|localhost)(:|\/|$)/i.test(u);
+    const baseNow = () => ($f('#as-provider').value || $f('#as-base').value).trim();
+    let contexts = {};
+    let timer = null;
+    let seq = 0;
+    async function listModels() {
+      const baseUrl = baseNow();
+      const key = $f('#as-key').value.trim();
+      const hint = $f('#as-hint');
+      if (!/^https?:\/\/\S+$/i.test(baseUrl) || (!key && !isLocal(baseUrl))) {
+        hint.textContent = '';
+        return;
+      }
+      const my = ++seq;
+      hint.textContent = tr('正在获取……');
+      try {
+        const r = await api('POST', '/api/models/remote', { baseUrl, apiKey: key, home: true });
+        if (my !== seq) return;
+        contexts = r.contexts || {};
+        $f('#as-models').innerHTML = r.models.map((id) => `<option value="${esc(id)}"></option>`).join('');
+        // 模型不多的服务（DeepSeek 只有两三个）直接填上第一个；OpenRouter 这种几百个的让你自己挑
+        const model = $f('#as-model');
+        if (!model.value.trim() && r.models.length && r.models.length <= 12) model.value = r.models[0];
+        hint.textContent = r.models.length ? tr('找到 {n} 个模型，点一下输入框就能选。', { n: r.models.length }) : tr('接口没有返回任何模型，请手动填写。');
+      } catch (e) {
+        if (my === seq) hint.textContent = e.message;
+      }
+    }
+    const later = () => {
+      clearTimeout(timer);
+      timer = setTimeout(listModels, 600);
+    };
+    $f('#as-provider').addEventListener('change', () => {
+      const own = !$f('#as-provider').value;
+      $f('#as-base-wrap').hidden = !own;
+      // 换了服务：清掉 Key 和模型，原来那家的 Key 不能发给新的这家
+      $f('#as-key').value = '';
+      $f('#as-model').value = '';
+      $f('#as-models').innerHTML = '';
+      $f('#as-hint').textContent = '';
+      contexts = {};
+      (own ? $f('#as-base') : $f('#as-key')).focus();
+      later();
+    });
+    $f('#as-key').addEventListener('input', later);
+    $f('#as-base').addEventListener('input', later);
+    if (h) later(); // 打开设置时也列一下（用存下的 Key）
+    const ui = {
+      el: form,
+      onSaved: null,
+      async save() {
+        const baseUrl = baseNow();
+        const apiKey = $f('#as-key').value.trim();
+        const model = $f('#as-model').value.trim();
+        if (!/^https?:\/\/\S+$/i.test(baseUrl)) throw new Error(tr('接口地址要以 http:// 或 https:// 开头'));
+        const keptKey = h && h.hasKey && normUrl(h.baseUrl) === normUrl(baseUrl);
+        if (!apiKey && !keptKey && !isLocal(baseUrl)) throw new Error(tr('请填写 API Key'));
+        if (!model) throw new Error(tr('API 模型需要填写模型名称'));
+        const p = API_PRESETS.find(([, u]) => u === $f('#as-provider').value);
+        const contextWindow = contexts[model] || (h && h.model === model && h.contextWindow) || 0;
+        S.settings = await api('PATCH', '/api/settings', { homeApi: { name: p ? p[2] : NAMES.openai, baseUrl, apiKey, model, contextWindow } });
+        if (ui.onSaved) ui.onSaved();
+      },
+    };
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const btn = $f('button[type=submit]');
+      if (btn) btn.disabled = true;
+      try {
+        await ui.save();
+      } catch (err) {
+        toast(err.message, true);
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+    });
+    return ui;
+  }
+
+  // 接好了（或者不用了）：主界面的成员按设置重新配，选成员的按钮出来，光标回到输入框
+  function homeApiSaved() {
+    if (!S.room && S.home && !S.home.from) S.home = homeTeam(null);
+    renderHomeStart();
+    updateTo();
+    const mate = S.settings && S.settings.homeApi && S.home && S.home.agents.find((a) => a.id === HOME_API_ID);
+    toast(mate ? tr('好了，新会话里会有 {name}。', { name: mate.name }) : tr('新会话里不会再加上 API 模型了。'));
+    const input = inputEl();
+    if (input && !S.room) input.focus();
+  }
+
+  function homeApiModal() {
+    const h = S.settings && S.settings.homeApi;
+    const form = apiStartForm(h);
+    const m = openModal({ title: tr('用 API Key 接入模型'), desc: tr('之后的每个新会话都会带上它，权限是「运行命令前问我」。'), body: form.el });
+    form.onSaved = () => {
+      m.close();
+      homeApiSaved();
+    };
+    const remove = {
+      label: tr('不再带上它'),
+      kind: 'danger',
+      onClick: async () => {
+        S.settings = await api('PATCH', '/api/settings', { homeApi: null });
+        m.close();
+        homeApiSaved();
+      },
+    };
+    footButtons(m, [...(h ? [remove] : []), 'spacer', { label: tr('取消') }, { label: tr('保存'), kind: 'primary', onClick: () => form.save() }]);
   }
 
   // 主界面的问候：按时间段挑一句（周一早上、周五晚上、周末白天另有几句），带上你的名字。
@@ -1339,7 +1508,10 @@
           .map((f) => esc(f.path))
           .join(tr('、'))}${deleted.length > 5 ? tr(' 等') : ''}</p>`
       : '';
-    return el(`<div class="files">${cards}${more}${del}</div>`);
+    // 记下了改之前、改之后的内容（能撤销）的，可以逐行看改了什么（见 showChanges）
+    const diff = m.undo ? `<button type="button" class="link-btn files-diff" data-diff="${m.id}">${tr('查看改动')}</button>` : '';
+    const links = more || diff ? `<div class="files-links">${more}${diff}</div>` : '';
+    return el(`<div class="files">${cards}${links}${del}</div>`);
   }
 
   // ---------- 交付核对：服务端按实际文件核对出来的（见 orchestrator.js 的 delivery） ----------
@@ -2285,6 +2457,10 @@
           flyout: () => modelChoices(a),
         })),
         ...(room ? ['-', { label: tr('添加成员'), icon: ICONS.plus, run: () => memberModal(null) }] : []),
+        // 主界面：用 API Key 接一个模型（接过的就是改它），之后的新会话都带上
+        ...(!room && S.home && !S.home.from
+          ? ['-', S.settings && S.settings.homeApi ? { label: tr('API 模型设置…'), icon: ICONS.gear, run: homeApiModal } : { label: tr('用 API Key 接入模型…'), icon: ICONS.plus, run: homeApiModal }]
+          : []),
       ],
       { align: 'right', above: true }
     );
@@ -2297,7 +2473,9 @@
     const more = S.room ? { label: tr('成员设置…'), icon: ICONS.gear, run: () => memberModal(agentById(a.id) || a) } : null;
     if (a.adapter === 'openai') {
       const fixed = { label: a.model || tr('还没有填写模型名称'), checked: !!a.model, disabled: true, run() {} };
-      return [head, fixed, ...(more ? ['-', { ...more, label: tr('在成员设置里换模型…') }] : [])];
+      // 主界面上「用 API Key 开始」接的模型：在它自己的设置里换
+      const edit = more ? { ...more, label: tr('在成员设置里换模型…') } : a.id === HOME_API_ID ? { label: tr('API 模型设置…'), icon: ICONS.gear, run: homeApiModal } : null;
+      return [head, fixed, ...(edit ? ['-', edit] : [])];
     }
     const cat = await loadCatalog(a.adapter);
     const list = (cat.models || []).slice();
@@ -2407,6 +2585,74 @@
     } catch (e) {
       toast(e.message, true);
     }
+  }
+
+  // 查看这一轮改了什么：逐行对比，和 git diff 一样一段段显示（服务端用撤销存下的改之前、改之后的内容算，见 diff.js）。
+  // 改动不多时全部展开；多的只展开第一个文件，点文件名展开、收起
+  async function showChanges(id) {
+    const m = S.messages.find((x) => x.id === id);
+    if (!m || !m.undo || !S.roomId) return;
+    let r;
+    try {
+      r = await api('GET', `/api/rooms/${S.roomId}/messages/${id}/changes`);
+    } catch (e) {
+      return toast(e.message, true);
+    }
+    const add = r.files.reduce((s, f) => s + (f.add || 0), 0);
+    const del = r.files.reduce((s, f) => s + (f.del || 0), 0);
+    const body = el(`<div class="diff">${r.files.map((f, i) => diffFileHtml(f, add + del <= 600 || i === 0)).join('')}</div>`);
+    body.addEventListener('click', (e) => {
+      const head = e.target.closest('[data-diff-toggle]');
+      if (!head) return;
+      const file = head.closest('.diff-file');
+      file.classList.toggle('open');
+      head.setAttribute('aria-expanded', String(file.classList.contains('open')));
+    });
+    const desc = tr('{n} 个文件，+{add} −{del}', { n: r.files.length, add, del }) + (m.undone ? tr('（这一轮的改动已经撤销了）') : '');
+    const dlg = openModal({ title: tr('{name} 这一轮的改动', { name: m.name }), desc, body, wide: true });
+    dlg.back.querySelector('.modal').classList.add('diff-modal'); // 代码要宽一点
+    const undo = m.undone
+      ? null
+      : {
+          label: tr('撤销这一轮的改动'),
+          onClick: () => {
+            dlg.close();
+            return undoTurn(id, false);
+          },
+        };
+    footButtons(dlg, [...(undo ? [undo] : []), 'spacer', { label: tr('关闭'), kind: 'primary' }]);
+  }
+
+  function diffFileHtml(f, open) {
+    const kind = f.change === 'add' ? tr('新建的文件') : f.change === 'delete' ? tr('删掉的文件') : tr('修改的文件');
+    const note = f.big
+      ? tr('文件太大（2 MB 以上），没有存下改动前后的内容。')
+      : f.binary
+        ? tr('二进制文件，不显示内容。')
+        : f.missing
+          ? tr('存下的内容找不到了。')
+          : f.eolOnly
+            ? tr('只改了换行符，或者文件末尾的空行。')
+            : '';
+    const counts = f.hunks ? `<span class="diff-count"><span class="plus">+${f.add}</span><span class="minus">−${f.del}</span></span>` : '';
+    const rows = (f.hunks || [])
+      .map(
+        (h, i) =>
+          (i ? '<tr class="diff-gap"><td colspan="3">⋯</td></tr>' : '') +
+          h.lines
+            .map(
+              ([t, o, n, text]) =>
+                `<tr class="d-${t}"><td class="ln">${o || ''}</td><td class="ln">${n || ''}</td><td class="code"><span class="sign">${t === 'add' ? '+' : t === 'del' ? '−' : ' '}</span>${esc(text)}</td></tr>`
+            )
+            .join('')
+      )
+      .join('');
+    return `<section class="diff-file ${open ? 'open' : ''}">
+      <button type="button" class="diff-head" data-diff-toggle aria-expanded="${open}">${ICONS.chev}<span class="diff-path">${esc(f.path)}</span><span class="diff-kind">${esc(kind)}</span>${counts}</button>
+      <div class="diff-body">${note ? `<p class="diff-note">${esc(note)}</p>` : ''}${rows ? `<div class="diff-scroll"><table class="diff-table">${rows}</table></div>` : ''}${
+        f.truncated ? `<p class="diff-note">${esc(tr('改动太多，只显示了前面一部分。'))}</p>` : ''
+      }</div>
+    </section>`;
   }
 
   // 编辑重发：把那条消息的文字放回输入框（附件发的时候服务端会一起带过来），输入框上方写明在编辑
@@ -4444,7 +4690,7 @@
   // ---------- 点击 ----------
   document.addEventListener('click', async (e) => {
     const t = e.target.closest(
-      '[data-room],[data-hit],[data-ask-allow],[data-ask-deny],[data-again],[data-edit-msg],[data-edit-cancel],[data-undo],[data-redo],[data-new-project],[data-new-standalone],[data-add-member],[data-agent],[data-at],[data-refresh-env],[data-settings],[data-open-folder],[data-stop],[data-continue],[data-work],[data-poke],[data-example],[data-tb],[data-tb-panel],[data-pick],[data-file-open],[data-file-menu],[data-file-link],[data-files-more],[data-copy-msg],[data-copy-code],[data-acct],[data-acct-tools],[data-update],[data-to-pick],[data-proj-toggle],[data-new-chat],[data-proj-menu],[data-chat-menu],[data-members],[data-accept-vote],[data-accept-clean],[data-dir-open],[data-att-remove],#jump'
+      '[data-room],[data-hit],[data-ask-allow],[data-ask-deny],[data-again],[data-edit-msg],[data-edit-cancel],[data-undo],[data-redo],[data-diff],[data-new-project],[data-new-standalone],[data-add-member],[data-agent],[data-at],[data-refresh-env],[data-settings],[data-open-folder],[data-stop],[data-continue],[data-work],[data-poke],[data-example],[data-tb],[data-tb-panel],[data-pick],[data-file-open],[data-file-menu],[data-file-link],[data-files-more],[data-copy-msg],[data-copy-code],[data-acct],[data-acct-tools],[data-update],[data-to-pick],[data-proj-toggle],[data-new-chat],[data-proj-menu],[data-chat-menu],[data-members],[data-accept-vote],[data-accept-clean],[data-dir-open],[data-att-remove],#jump'
     );
     // 成员面板开着时，点到面板外面就收起
     if ($('#membersPop') && !e.target.closest('#membersPop') && !e.target.closest('[data-members]')) closeMembersPop();
@@ -4465,6 +4711,7 @@
       if (d.askDeny) return answerAsk(d.askDeny, false);
       if (d.undo) return undoTurn(d.undo, false);
       if (d.redo) return undoTurn(d.redo, true);
+      if (d.diff) return showChanges(d.diff);
       if (d.projToggle) return toggleProject(d.projToggle);
       if (d.newChat) return newConversation(d.newChat, S.room && S.room.projectId === d.newChat ? S.roomId : null);
       if (d.projMenu) {
@@ -4705,6 +4952,12 @@
       if (langChanged) return location.reload();
       account.applyTheme(next.theme || 'system');
       renderEnv();
+      // 主界面：「用 API Key 开始」接的模型变了（可能是在别的窗口里改的），成员跟着变
+      if (!S.room && S.home && !S.home.from) {
+        S.home = homeTeam(null);
+        renderHomeStart();
+        updateTo();
+      }
     });
     on('cleared', ({ roomId }) => {
       if (roomId !== S.roomId) return;
@@ -4930,6 +5183,7 @@
       const g = $('#homeGreet');
       if (g) g.textContent = greeting(); // 还是同一句，名字可能这时才读到
       updateTo();
+      renderHomeStart(); // 一个 AI 工具都没检测到：这时才出「用 API Key 开始」
     }
   }
 
